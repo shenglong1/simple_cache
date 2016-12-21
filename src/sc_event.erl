@@ -18,7 +18,8 @@
   create/4,
   replace/4,
   delete/3,
-  show/1]).
+  show/1,
+  info/2]).
 
 %% API
 start_link() ->
@@ -46,3 +47,17 @@ replace(Key, Pid, Value, Node) ->
 
 show(L) when is_list(L) ->
   gen_event:notify(?SERVER, {show, L}).
+
+info(Format, Msglist) when is_list(Msglist) ->
+  gen_event:notify(?SERVER, {info, Format, Msglist}).
+
+
+
+
+
+
+
+
+
+
+

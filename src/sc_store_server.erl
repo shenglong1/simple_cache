@@ -18,7 +18,8 @@
   test/0,
   info/0,
   dump_to_file/1,
-  load_from_file/1]).
+  load_from_file/1,
+  list_delete/2]).
 
 %% API
 -export([start_link/0,
@@ -42,19 +43,20 @@
 -record(key_to_pid, {name, pid}).
 -record(user_auth, {name, code, timestamp}).
 -record(friend, {name, fr_names, timestamp}). % fr_names is list
+-record(group_info, {group_id, members}).
 
 -record(single_chat, {name, other_name, chat_id}). % 同时需要添加name-other,other-name
--record(single_chat_record, {chat_id, from, to, timestamp, content}).
-
 -record(group_chat, {name, group, group_id}).
--record(group_info, {group_id, members}).
+
+% content contains bi-direct msg
+-record(single_chat_record, {chat_id, from, to, timestamp, content}).
 -record(group_chat_record, {group_id, from, to, timestamp, content}).
 
 %%%===================================================================
 %%% API
 %%% multi_node
 %%% insert/lookup/delete 重载不同表，模式匹配检查tuple参数，构造合法的Table Tuple给_sender
-%%% _sender函数不负责Table-Tuple匹配，只管发送{Handle, Table, Tuple}
+%%% _sender函数不负责Table-Tuple匹配，只管发送{Handle, Table, Tuple}，负责分布式
 %%% req: {handle_type, table, args_tuple}
 %%% res:
 %%% insert: ok|error,
@@ -62,6 +64,7 @@
 %%% delete: {noreply, State}
 %%%===================================================================
 % overload insert, check Param tuple
+% return: ok | error
 insert(key_to_pid, #key_to_pid{} = Param) ->
   insert_sender(key_to_pid, Param);
 insert(user_auth, #user_auth{} = Param) ->
@@ -84,15 +87,17 @@ insert_sender(Table, Args) when is_tuple(Args) ->
   gen_server:call(?SERVER, {insert, Table, Args}).
 
 % global search
+% return: {ok, {wholeline}, node} | {error, not_found, all_nodes}
 lookup(key_to_pid, Key) when is_atom(Key) ->
   lookup_sender([node()|nodes()], key_to_pid, #key_to_pid{name = Key});
 lookup(user_auth, Key) when is_atom(Key) ->
   lookup_sender([node()|nodes()], user_auth, #user_auth{name = Key});
 lookup(friend, Key) when is_atom(Key) ->
   lookup_sender([node()|nodes()], friend, #friend{name = Key});
-lookup(group_info, Key) when is_atom(Key) ->
+lookup(group_info, Key) when is_integer(Key) ->
   lookup_sender([node()|nodes()], group_info, #group_info{group_id = Key});
 
+% 接收参数为table,tuple时，当tuple需要多参数指定，但实际少给了参数，则未给定的是'undefined'，导致select结果空.
 lookup(single_chat, #single_chat{name = _X, other_name = _Y} = Param) ->
   lookup_sender([node()|nodes()], single_chat, Param);
 lookup(single_chat_record, #single_chat_record{chat_id = _X} = Param) ->
@@ -122,23 +127,44 @@ lookup_sender([N|OtherNodes], Table, Keys) when is_tuple(Keys) ->
   end.
 
 % broadcast delete
-delete(key_to_pid, Pid) ->
+% return: null
+delete(key_to_pid, Name) when is_atom(Name) ->
+  delete_sender(key_to_pid, #key_to_pid{name = Name});
+delete(key_to_pid, Pid) when is_integer(Pid) -> %%%%%%%%%%%%%%%%% TODO: for test
   delete_sender(key_to_pid, #key_to_pid{pid = Pid});
+
 delete(user_auth, Name) ->
   delete_sender(user_auth, #user_auth{name = Name});
-delete(group_info, Group_id) ->
-  delete_sender(group_info, #group_info{group_id = Group_id});
-delete(single_chat_record, Chat_id) ->
-  delete_sender(single_chat_record, #single_chat_record{chat_id = Chat_id});
-delete(group_chat_record, Group_id) ->
-  delete_sender(group_chat_record, #group_chat_record{group_id = Group_id}).
+
+delete(friend, Name) ->
+  % delete all friends in name
+  delete_sender(friend, #friend{name = Name});
+
+delete(group_info, Gid) ->
+  % delete all members in group_id
+  delete_sender(group_info, #group_info{group_id = Gid});
+
+% TODO: not implement now
+delete(single_chat_record, Cid) ->
+  delete_sender(single_chat_record, #single_chat_record{chat_id = Cid});
+delete(group_chat_record, Gid) ->
+  delete_sender(group_chat_record, #group_chat_record{group_id = Gid}).
 
 delete(friend, Name, Frname) ->
+  % delete one friend in name
   delete_sender(friend, #friend{name = Name, fr_names = [Frname]});
+
+delete(group_info, Gid, Member) ->
+  % delete one member in group_id
+  delete_sender(group_info, #group_info{group_id = Gid, members = [Member]});
+
 delete(single_chat, Name, Frname) ->
   delete_sender(single_chat, #single_chat{name = Name, other_name = Frname});
+
 delete(group_chat, Name, Group) ->
+  % one name quit the group
   delete_sender(group_chat, #group_chat{name = Name, group = Group}).
+
 
 delete_sender(Table, Keys) when is_tuple(Keys) ->
   gen_server:abcast([node()|nodes()], ?MODULE, {delete, Table, Keys}).
@@ -231,7 +257,7 @@ handle_call({insert, Table, Tuple}, _From, State) ->
 % lookup returns {reply, {ok, {wholeline}}, State} | {reply, {error, not_found}, State}
 handle_call({lookup, key_to_pid, #key_to_pid{name = Name}}, _From, State) ->
   case mnesia:dirty_read(key_to_pid, Name) of
-    [{key_to_pid, _Name, Pid}] ->
+    [#key_to_pid{name = _Name, pid = Pid}] ->
       case is_pid_alive(Pid) of
         true -> {reply, {ok, {Name, Pid}}, State};
         false ->
@@ -244,17 +270,19 @@ handle_call({lookup, key_to_pid, #key_to_pid{name = Name}}, _From, State) ->
   end;
 handle_call({lookup, user_auth, #user_auth{name = Name}}, _From, State) ->
   case mnesia:dirty_read(user_auth, Name) of
-    [{user_auth, _Name, Code, Time}] -> {reply, {ok, {Name, Code, Time}}, State};
-    [] -> {reply, {error, not_found}, State}
+    [#user_auth{code = Code, timestamp = Time}] ->
+      {reply, {ok, {Name, Code, Time}}, State};
+    [] ->
+      {reply, {error, not_found}, State}
   end;
 handle_call({lookup, friend, #friend{name = Name}}, _From, State) ->
   case mnesia:dirty_read(friend, Name) of
-    [{friend, _Name, Friend_list, Time}] -> {reply, {ok, {Name, Friend_list, Time}}, State};
+    [#friend{fr_names = Friend_list, timestamp = Time}] -> {reply, {ok, {Name, Friend_list, Time}}, State};
     [] -> {reply, {error, not_found}, State}
   end;
 handle_call({lookup, group_info, #group_info{group_id = Group_id}}, _From, State) ->
   case mnesia:dirty_read(group_info, Group_id) of
-    [{group_info, _Group_id, Member_list}] -> {reply, {ok, {Group_id, Member_list}}, State};
+    [#group_info{members = Member_list}] -> {reply, {ok, {Group_id, Member_list}}, State};
     [] -> {reply, {error, not_found}, State}
   end;
 
@@ -298,26 +326,115 @@ handle_call({lookup, group_chat_record, #group_chat_record{group_id = _Gid}}, _F
   {noreply, NewState :: term()} |
   {noreply, NewState :: term(), timeout() | hibernate} |
   {stop, Reason :: term(), NewState :: term()}).
-handle_cast({delete, key_to_pid, #key_to_pid{pid = Pid}}, State) ->
-  % 删除本地的Key-Pid
-  try mnesia:dirty_index_read(key_to_pid, Pid, #key_to_pid.pid) of
-    [#key_to_pid{} = Record] ->
-      mnesia:dirty_delete_object(key_to_pid, Record),
+
+handle_cast({delete, key_to_pid, #key_to_pid{name = Name, pid = Pid}}, State) ->
+  % try to delete by name or pid
+  try mnesia:dirty_read(key_to_pid, Name) of
+    [#key_to_pid{name = Name_ret, pid = Pid_ret}] ->
+      mnesia:dirty_delete_object(key_to_pid, #key_to_pid{name = Name_ret, pid = Pid_ret}),
       {noreply, State};
+    [] ->
+      case mnesia:dirty_index_read(key_to_pid, Pid, #key_to_pid.pid) of
+        [#key_to_pid{} = Record] ->
+          mnesia:dirty_delete_object(key_to_pid, Record),
+          {noreply, State};
+        _ -> {noreply, State}
+      end
+  catch
+    _ : _ -> {noreply, State}
+  end;
+
+handle_cast({delete, user_auth, #user_auth{name = Name}}, State) ->
+  try mnesia:dirty_delete(user_auth, Name) of
     _ -> {noreply, State}
   catch
     _ : _ -> {noreply, State}
-  end,
-  {noreply, State};
-handle_cast({delete, user_auth, #user_auth{name = Name}}, State) -> ok;
+  end;
 
-handle_cast({delete, friend, #friend{name = Name, fr_names = [Frname]}}, State) -> ok;
-handle_cast({delete, group_info, #group_info{group_id = Gid}}, State) -> ok;
+handle_cast({delete, friend, #friend{name = Name, fr_names = Fr_names}}, State) ->
+  case Fr_names of
+    [_Names] ->
+      case mnesia:dirty_read(friend, Name) of
+        [#friend{name = Name_ret, fr_names = Fr_names_ret}] when is_list(Fr_names_ret) ->
+          Names_left = list_delete(Fr_names, Fr_names_ret),
+            catch(mnesia:dirty_write(friend, #friend{name = Name_ret, fr_names = Names_left, timestamp = timestamp()})),
+          {noreply, State};
+        _ -> {noreply, State}
+      end;
+    _ ->
+      mnesia:dirty_delete(friend, Name),
+      {noreply, State}
+  end;
 
-handle_cast({delete, single_chat, #single_chat{name = Name, other_name = Oname}}, State) -> ok;
-handle_cast({delete, group_chat, #group_chat{name = Name, group = Group}}, State) -> ok;
-handle_cast({delete, single_chat_record, #single_chat_record{chat_id = Cid}}, State) -> ok;
-handle_cast({delete, group_chat_record, #group_chat_record{group_id = Gid}}, State) -> ok;
+handle_cast({delete, group_info, #group_info{group_id = Gid, members = Members}}, State) ->
+  case Members of
+    [_Members] ->
+      case mnesia:dirty_read(group_info, Gid) of
+        [#group_info{group_id = Gid_ret, members = Members_ret}] ->
+          Members_left = list_delete(Members, Members_ret),
+            catch(mnesia:dirty_write(group_info, #group_info{group_id = Gid_ret, members = Members_left})),
+          {noreply, State};
+        _ -> {noreply, State}
+      end;
+    _ ->
+      mnesia:dirty_delete(group_info, Gid),
+      {noreply, State}
+  end;
+
+handle_cast({delete, single_chat, #single_chat{name = Name, other_name = Oname}}, State) ->
+  Check =
+    fun(R) when is_record(R, single_chat) ->
+      try
+        #single_chat{name = Name_tmp, other_name = Oname_tmp} = R,
+        case (Name_tmp == Name) and (Oname_tmp == Oname) of
+          true -> true;
+          false -> false
+        end
+      catch
+        _ : _ -> false
+      end
+    end,
+  Delete_one_record =
+    fun(R) when is_record(R, single_chat) ->
+        catch(mnesia:dirty_delete_object(single_chat, R))
+    end,
+  try
+    Records = mnesia:dirty_read(single_chat, Name),
+    Targets = lists:filter(Check, Records),
+    lists:foreach(Delete_one_record, Targets),
+    {noreply, State}
+  catch
+    _ : _ -> {noreply, State}
+  end;
+
+handle_cast({delete, group_chat, #group_chat{name = Name, group = Group}}, State) ->
+  Check =
+    fun(R) when is_record(R, group_chat) ->
+      try
+        #group_chat{name = Name_tmp, group = Group_tmp} = R,
+        case (Name_tmp == Name) and (Group_tmp == Group) of
+          true -> true;
+          false -> false
+        end
+      catch
+        _ : _ -> false
+      end
+    end,
+  Delete_one_record =
+    fun(R) when is_record(R, group_chat) ->
+      mnesia:dirty_delete_object(group_chat, R)
+    end,
+  try
+    Records = mnesia:dirty_read(group_chat, Name),
+    Targets = lists:filter(Check, Records),
+    lists:foreach(Delete_one_record, Targets),
+    {noreply, State}
+  catch
+    _ : _ -> {noreply, State}
+  end;
+
+handle_cast({delete, single_chat_record, #single_chat_record{chat_id = _Cid}}, State) -> {noreply, State};
+handle_cast({delete, group_chat_record, #group_chat_record{group_id = _Gid}}, State) -> {noreply, State};
 
 
 handle_cast(stop, State) ->
@@ -416,6 +533,7 @@ create_all_tables() ->
     catch(mnesia:create_table(single_chat,
     [
       {type, bag},
+      {index, [#single_chat.other_name]},
       {disc_copies, [node()]},
       {attributes, record_info(fields, single_chat)}
     ])),
@@ -428,6 +546,7 @@ create_all_tables() ->
     catch(mnesia:create_table(group_chat,
     [
       {type, bag},
+      {index, [#group_chat.group]},
       {disc_copies, [node()]},
       {attributes, record_info(fields, group_chat)}
     ])),
@@ -477,6 +596,16 @@ is_pid_alive(_Pid) ->
 %      end
 %  end.
 
+% delete [Del|H] from From list
+list_delete([], From) when is_list(From) -> From;
+list_delete([Del|H], From) ->
+  list_delete(H, lists:delete(Del, From)).
+
+% get unix time
+timestamp() ->
+  {M, S, _} = erlang:now(),
+  M * 1000000 + S.
+
 info() ->
   mnesia:info().
 
@@ -487,17 +616,61 @@ load_from_file(File) ->
 
 test_insert() ->
   insert(key_to_pid, #key_to_pid{name='shenglong1', pid = 1}),
-  insert(user_auth, #user_auth{name='shenglong1', code = '123qweasd', timestamp = 1482483822}),
-  insert(friend, #friend{name = 'shenglong1', fr_names = ['James'], timestamp = 1482483822}),
+  insert(key_to_pid, #key_to_pid{name='shenglong11', pid = 2}),
+
+  insert(user_auth, #user_auth{name='shenglong1', code = '123qweasd', timestamp = timestamp()}),
+
+  insert(friend, #friend{name = 'shenglong1', fr_names = ['James', 'Allen', 'Bale'], timestamp = timestamp()}),
+  insert(friend, #friend{name = 'Allen', fr_names = ['James', 'Allen', 'Bale'], timestamp = timestamp()}),
+  insert(friend, #friend{name = 'Bale', fr_names = ['James', 'Allen', 'Bale'], timestamp = timestamp()}),
+
   insert(single_chat, #single_chat{name = 'shenglong1', other_name = 'James', chat_id = 111}),
+  insert(single_chat, #single_chat{name = 'shenglong1', other_name = 'Allen', chat_id = 112}),
+  insert(single_chat, #single_chat{name = 'shenglong1', other_name = 'Bale', chat_id = 113}),
+
   insert(group_chat, #group_chat{name = 'shenglong1', group = 'mygroup', group_id = 1011}),
-  insert(group_info, #group_info{group_id = 1011, members = ['shenglong1', 'James']}),
 
-  insert(single_chat_record, #single_chat_record{chat_id = 111, from = 'shenglong1', to = 'James', timestamp = 1482483822, content = 'hello world!'}),
-  insert(group_chat_record, #group_chat_record{group_id = 1011, from = 'shenglong1', to = 'James', timestamp = 1482483822, content = 'group hello world!'}).
+  insert(group_info, #group_info{group_id = 1011, members = ['shenglong1', 'James', 'Allen', 'Bale']}),
+  insert(group_info, #group_info{group_id = 1012, members = ['shenglong1', 'Bale']}),
 
-test_lookup() -> ok.
-test_delete() -> ok.
+  insert(single_chat_record, #single_chat_record{chat_id = 111, from = 'shenglong1', to = 'James', timestamp = timestamp(), content = 'hello world!'}),
+  insert(group_chat_record, #group_chat_record{group_id = 1011, from = 'shenglong1', to = 'James', timestamp = timestamp(), content = 'group hello world!'}).
+
+test_lookup() ->
+  io:format("~p~n", [lookup(key_to_pid, shenglong1)]),
+  io:format("~p~n", [lookup(key_to_pid, shenglong2)]),
+
+  io:format("~p~n", [lookup(user_auth, shenglong1)]),
+  io:format("~p~n", [lookup(user_auth, shenglong2)]),
+
+  io:format("~p~n", [lookup(friend, shenglong1)]),
+  io:format("~p~n", [lookup(friend, shenglong2)]),
+
+  io:format("~p~n", [lookup(group_info, 1011)]),
+  io:format("~p~n", [lookup(group_info, 1012)]),
+
+
+  io:format("~p~n", [lookup(single_chat, #single_chat{name = 'shenglong1', other_name = 'James'})]),
+  io:format("~p~n", [lookup(single_chat, #single_chat{name = 'shenglong2', other_name = 'Allen'})]),
+  io:format("~p~n", [lookup(single_chat, #single_chat{name = 'shenglong1'})]),
+
+  io:format("~p~n", [lookup(group_chat, #group_chat{name = 'shenglong1', group = 'mygroup'})]),
+  io:format("~p~n", [lookup(group_chat, #group_chat{name = 'shenglong1'})]),
+  io:format("~p~n", [lookup(group_chat, #group_chat{name = 'shenglong2', group = 'mygroup'})]).
+
+
+test_delete() ->
+  delete(key_to_pid, 'shenglong1'),
+  delete(key_to_pid, 2),
+  delete(user_auth, 'shenglong1'),
+  delete(user_auth, 'shenglong2'),
+  delete(friend, 'shenglong1'),
+  delete(friend, 'Allen', 'Allen'),
+  delete(group_info, 1011),
+  delete(group_info, 1012, 'Bale'),
+  delete(single_chat, 'shenglong1', 'James'),
+  delete(single_chat, 'shenglong1', 'Allen'),
+  delete(group_chat, 'shenglong1', 'mygroup').
 
 test() ->
   insert(key_to_pid, #key_to_pid{name = shenglong1, pid = 11}),

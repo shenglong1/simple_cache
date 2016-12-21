@@ -43,6 +43,10 @@ handle_event({replace, {Key, Pid, Value, Node}}, State) ->
 
 handle_event({show, L}, State) when is_list(L) ->
   lists:map(fun(X) -> error_logger:info_msg("sc_event_logger:show ~p~n", X) end, L),
+  {ok, State};
+
+handle_event({info, Format, Msglist}, State) ->
+  error_logger:info_msg(Format, Msglist),
   {ok, State}.
 
 handle_call(_Request, State) ->
