@@ -1,0 +1,1 @@
+werl -name s1 -pa "C:/Users/shenglong/erlang_testfield/simple_cache/ebin" -pa "C:/Users/shenglong/erlang_testfield/simple_cache/resource_discovery/ebin/"

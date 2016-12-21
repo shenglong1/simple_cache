@@ -8,3 +8,10 @@ ebin
 rel/example_project
 .concrete/DEV_MODE
 .rebar
+*.DCL
+*.DCD
+*.xml
+*.bat
+*.BAT
+*.LOG
+*.log
