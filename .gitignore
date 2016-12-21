@@ -11,7 +11,6 @@ rel/example_project
 *.DCL
 *.DCD
 *.xml
-*.bat
 *.BAT
 *.LOG
 *.log

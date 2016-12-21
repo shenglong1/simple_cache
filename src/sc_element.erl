@@ -18,7 +18,8 @@
   create/1,
   fetch/1,
   replace/2,
-  delete/1
+  delete/1,
+  send_msg/2
 ]).
 
 %% callbacks
@@ -34,6 +35,7 @@
 start_link(Value, LeaseTime) ->
   gen_server:start_link(?MODULE, [Value, LeaseTime], []). % call ?MODULE:init(Args)
 
+%%% value container
 %% local
 create(Value, LeaseTime) ->
   sc_element_sup:start_child(Value, LeaseTime).
@@ -54,6 +56,11 @@ replace(Pid, Value) ->
 % 利用gen_server来完成跨进程发req，收res
 delete(Pid) ->
   gen_server:cast(Pid, delete).
+
+%%% communicate API
+send_msg(Pid, Msg) ->
+  gen_server:call(Pid, {send, Msg}).
+
 
 %% callbacks
 init([Value, LeaseTime]) ->
@@ -76,14 +83,18 @@ time_left(StartTime, LeaseTime) ->
     Time                -> Time * 1000
   end.
 
-handle_call(fetch, _From,  State) ->
+handle_call(fetch, _From, State) ->
   % 从State中模式匹配出Value, LeaseTime, StartTime
   #state{value = Value,
     lease_time = LeaseTime,
     start_time = StartTime} = State,
   TimeLeft = time_left(StartTime, LeaseTime),
   % 返回当前Value值
-  {reply, {ok, Value}, State, TimeLeft}. %% -> loop(_, State, TimeLeft)
+  {reply, {ok, Value}, State, TimeLeft}; %% -> loop(_, State, TimeLeft)
+
+handle_call({send, Msg}, From, State) ->
+  io:format("[From:~p To:~p]:~p~n", [From, self(), Msg]),
+  {reply, ok, State}.
 
 handle_cast({replace, Value}, State) ->
   % 从State中模式匹配出LeaseTime, StartTime
