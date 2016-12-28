@@ -40,11 +40,11 @@ start_link() ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec(start_child(Value :: integer(), LeaseTime :: integer()) ->
+-spec(start_child(Caller :: pid(), LeaseTime :: integer()) ->
   {ok, Pid :: pid()} | {error, Reason :: term()}
 ).
-start_child(Value, LeaseTime) ->
-  supervisor:start_child(?SERVER, [Value, LeaseTime]).
+start_child(Caller, LeaseTime) ->
+  supervisor:start_child(?SERVER, [Caller, LeaseTime]).
 
 %%%===================================================================
 %%% Supervisor callbacks

@@ -30,10 +30,11 @@
   friend_add_impl/2,
   friend_del/2,
   friend_del_impl/2,
-  my_name/0,
+  my_name/1,
+  in_group/2,
   send_msg/2,
-  send_msg/3,
-  broadcast/3
+  broadcast/2,
+  broadcast_impl/3
 ]).
 
 %% API for time lease
@@ -107,15 +108,24 @@ is_logined(User) ->
 
 sign_in(User, Passwd) ->
   % 登录
+  % 在哪儿登录，key_to_pid就记在哪个节点
   case sc_store_server:lookup(user_auth, User) of
-    {ok, _, _} ->
+    {ok, {_, Code, _}, _} ->
       case sc_store_server:lookup(key_to_pid, User) of
         {ok, _, _} -> {ok, already_running};
         {error, _, _} ->
-          % TODO: 先检查密码
-          {ok, Pid} = sc_element:create(1),
-          ok = sc_store_server:insert(key_to_pid, #key_to_pid{name = User, pid = Pid}),
-          {ok, sign_in}
+          % 先检查密码
+          case Code == Passwd of
+            true ->
+              % simple_cache和element互相持有对方pid
+              {ok, Pid} = sc_element:create(self()),
+              ok = sc_store_server:insert(key_to_pid, #key_to_pid{name = User, pid = Pid}),
+
+              erlang:put(element_pid, Pid),
+              {ok, sign_in};
+            false ->
+              {error, passwd_err}
+          end
       end;
     {error, _, _} ->
       {error, need_login_first}
@@ -225,12 +235,22 @@ friend_del_impl(User, Frname) ->
   end.
 
 % TODO: 获取当前element进程Pid对应的Name
-my_name() -> ok.
+%% TODO: 如何绑定simple_cache API 调用者进程和 他建立的element进程 ????
+my_name(My_element_pid) ->
+  [#key_to_pid{name = Name}] = mnesia:dirty_index_read(key_to_pid, My_element_pid, #key_to_pid.pid),
+  Name.
+
+in_group(Name, Group) ->
+  case sc_store_server:lookup(group_chat, #group_chat{name = Name, group = Group}) of
+    {ok, {_, _, _}, _} -> true;
+    {error, _, _} -> false
+  end.
 
 % TODO: 目前只能发送给在线用户
 % return: {ok, Reason} | {error, Reason}
 send_msg(Name, Msg) ->
-  My_name = my_name(),
+  % send from My_name to Name
+  My_name = my_name(erlang:get(element_pid)),
   case is_logined(Name) and is_friend(My_name, Name) of
     true ->
 
@@ -249,17 +269,15 @@ send_msg(Name, Msg) ->
       {error, not_login}
   end.
 
-% TODO: 这个send_msg在线方式不变，发送到Name; 而离线发送时保存到group_chat_record中；
-send_msg(_Name, _Msg, broadcast) -> ok.
-
 % return: {ok, Reason} | {error, Reason}
-broadcast(My_name, Group, Msg) ->
+broadcast(Group, Msg) ->
+  My_name = my_name(erlang:get(element_pid)),
   case sc_store_server:lookup(group_chat, #group_chat{name = My_name, group = Group}) of
     {ok, {_, _, Gid}, _} ->
 
       case sc_store_server:lookup(group_info, Gid) of
         {ok, {_, Members}, _} ->
-          lists:map(fun(X) -> send_msg(X, Msg, broadcast) end, Members),
+          lists:map(fun(X) -> broadcast_impl(X, Msg, broadcast) end, Members),
           ok;
         {error, _, _} ->
           {error, members_not_found}
@@ -269,8 +287,30 @@ broadcast(My_name, Group, Msg) ->
       {error, gid_not_found}
   end.
 
-% TODO: 还需要有group相关操作，例如加入组，退出组，解散组
+% TODO: 这个send_msg在线方式不变，发送到Name; 而离线发送时保存到group_chat_record中；
+broadcast_impl(Name, Msg, broadcast) ->
+  % send from My_name to Name
+  My_name = my_name(erlang:get(element_pid)),
+  case is_logined(Name) of
+    true ->
 
+      case client_running(Name) of
+        true ->
+          % online msg
+          % TODO: msg还需要保存到mnesia中
+          {ok, {_, Pid}, _} = sc_store_server:lookup(key_to_pid, Name),
+          ok = sc_element:send_msg(Pid, Msg);
+        false ->
+          % TODO: offline msg, 离线消息会保存到single_chat_record中
+          ok
+      end;
+
+    false ->
+      {error, not_login}
+
+
+
+% TODO: 还需要有group相关操作，例如加入组，退出组，解散组
 
 
 
