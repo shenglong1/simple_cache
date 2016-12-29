@@ -1,0 +1,9 @@
+{tables,[{key_to_pid,[{record_name,key_to_pid},{attributes,[key,pid]}]}]}.
+{key_to_pid,8,<0.231.0>}.
+{key_to_pid,2,<0.228.0>}.
+{key_to_pid,4,<0.229.0>}.
+{key_to_pid,1,<0.224.0>}.
+{key_to_pid,3,<0.225.0>}.
+{key_to_pid,5,<0.226.0>}.
+{key_to_pid,7,<0.227.0>}.
+{key_to_pid,6,<0.230.0>}.

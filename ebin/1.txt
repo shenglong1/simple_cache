@@ -1,0 +1,1 @@
+{tables,[{key_to_pid,[{record_name,key_to_pid},{attributes,[key,pid]}]}]}.
