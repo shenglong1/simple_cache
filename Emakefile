@@ -1,10 +1,10 @@
 {
     [
-        'src/sc_store_server.erl'
+        'src/*'
     ],
     [
         debug_info,
-        {outdir, "./src"}
+		{outdir, "./ebin"}
     ]
 
 }.

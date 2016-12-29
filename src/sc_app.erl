@@ -39,7 +39,7 @@
   {error, Reason :: term()}).
 start(_StartType, _StartArgs) ->
   % 这里的设置都是全局的，跨节点
-  ok = ensure_contact(), % connect all nodes
+  ensure_contact(), % connect all nodes % TODO:这里先屏蔽了自己ping的功能，手动保证ping通
   resource_discovery:add_local_resource(simple_cache, node()),
   resource_discovery:add_target_resource_type(simple_cache),
   resource_discovery:trade_resources(),

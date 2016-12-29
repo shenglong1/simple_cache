@@ -111,7 +111,7 @@ handle_info({send, From, Msg}, State) ->
 
   case is_pid(From) of
     true ->
-      % echo
+      % ack
       erlang:send(From, {send, noreply, got})
   end,
 
@@ -125,6 +125,7 @@ handle_info(timeout, State) ->
 
 terminate(_Reason, _State) ->
   sc_store_server:delete(key_to_pid, self()),
+  % TODO: 保存内存中的数据,Caller
   ok.
 
 code_change(_OldVsn, State, _Extra) ->

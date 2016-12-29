@@ -17,8 +17,8 @@
 -define(SERVER, ?MODULE).
 
 -record(state, {target_resource_types, % 需要的资源 [type]
-  local_resource_tuples, % 本地提供的资源 type resource, dict = {Key, [Value]}
-  found_resource_tuples}). % 从外部获取到的资源 type resource, dict = {Key, [Value]}
+  local_resource_tuples, % 本地提供的资源 type resource, dict = [{Key, [Value]}]
+  found_resource_tuples}). % 从外部获取到的资源 type resource, dict = [{Key, [Value]}]
 %% 说明: tuple 的数据结构是{key:value} = {Type:[Resource]} = Dict
 
 % -record(tables, {target_table, local_table, found_table}).

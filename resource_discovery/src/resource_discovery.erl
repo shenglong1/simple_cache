@@ -25,9 +25,9 @@ show() ->
   rd_server:show_local().
 
 test() ->
-  net_adm:ping(conact1@0280106PC0413),
-  net_adm:ping(conact2@0280106PC0413),
+  net_adm:ping(c1@0280106PC0413),
+  net_adm:ping(c2@0280106PC0413),
   rd_server:add_target_resource_type(simple_cache),
-  rd_server:add_local_resource(simple_cache, contact1),
-  rd_server:add_local_resource(simple_cache, contact2),
+  rd_server:add_local_resource(simple_cache, c1),
+  rd_server:add_local_resource(simple_cache, c2),
   rd_server:trade_resources().
