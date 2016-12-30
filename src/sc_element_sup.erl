@@ -44,6 +44,7 @@ start_link() ->
   {ok, Pid :: pid()} | {error, Reason :: term()}
 ).
 start_child(Caller, LeaseTime) ->
+  % start all children which sc_element_sup:init returns
   supervisor:start_child(?SERVER, [Caller, LeaseTime]).
 
 %%%===================================================================
@@ -68,21 +69,27 @@ start_child(Caller, LeaseTime) ->
   ignore |
   {error, Reason :: term()}).
 init([]) ->
-  RestartStrategy = simple_one_for_one, % 仅能启动同一种子进程，但可以启动多个
-  MaxRestarts = 0,
-  MaxSecondsBetweenRestarts = 1,
+  RestartStrategy = one_for_one, % 仅能启动同一种子进程，但可以启动多个
+  % 不自动重启
+  % MaxRestarts = 0,
+  % MaxSecondsBetweenRestarts = 1,
+  % 需要自动重启
+  MaxRestarts = 10,
+  MaxSecondsBetweenRestarts = 60,
 
   SupFlags = {RestartStrategy, MaxRestarts, MaxSecondsBetweenRestarts},
 
-  Restart = temporary,
-  Shutdown = brutal_kill,
+  RestartType = transient,
+  % RestartType = permanent, % TODO: test auto startup
+  Shutdown = 30,
   Type = worker,
 
   % 子进程规范
   % {ID, Start = {Mod, Fun, Args}, Restart, Shutdown, Type, Modules}
   AChild = {sc_element, {sc_element, start_link, []},
-    Restart, Shutdown, Type, [sc_element]},
+    RestartType, Shutdown, Type, [sc_element]},
 
+  % TODO: 这里相当于是
   {ok, {SupFlags, [AChild]}}.
 
 %%%===================================================================

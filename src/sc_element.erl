@@ -15,13 +15,15 @@
 
 %% API
 -export([
+  start_link/0,
   start_link/2,
   create/2,
   create/1,
   fetch/1,
   replace/2,
   delete/1,
-  send_msg/2
+  send_msg/2,
+  flush/1
 ]).
 
 %% callbacks
@@ -34,12 +36,21 @@
 -record(state, {caller, lease_time, start_time}).
 
 %% API
-start_link(Caller, LeaseTime) when is_pid(Caller) ->
-  gen_server:start_link(?MODULE, [Caller, LeaseTime], []). % call ?MODULE:init(Args)
+start_link() ->
+  % TODO: !!! 自动拉起时居然不是到这里 !!! never get here
+  gen_server:start_link(?SERVER, [self(), 3600], []).
+start_link(Caller, LeaseTime) ->
+  % TODO: 由element_sup自动拉起时调用
+  % TODO: 且自动拉起时和首次启动时的Caller, LeaseTime参数都完全相同!!!
+  % TODO: call sc_element:init(_,_)
+  gen_server:start_link(?MODULE, [Caller, LeaseTime], []). % call element:init
 
 %%% value container
 %% local
+% sc_element_sup:start_child最终还是回来调用MFA，即start_link(Caller, LeaseTime)
 create(Caller, LeaseTime) when is_pid(Caller) ->
+  % TODO: 首次建立element时由Caller调用,告诉sc_element_sup:supervisor去启动一个element child
+  % TODO: 这么做之后，会导致supervisor:State中element的MFA更新，其中A包含Caller/LeaseTime，用于下次启动
   sc_element_sup:start_child(Caller, LeaseTime).
 
 create(Caller) ->
@@ -65,6 +76,8 @@ send_msg(Pid, Msg) ->
 
 %% callbacks
 init([Caller, LeaseTime]) ->
+  % 无论是首次启动(create)或是自动拉起start_link，最终都是到这里，且都提供了Caller参数
+  % TODO: 如何区分是自动拉起的？如果是自动拉起的就必须通知Caller更新pid
   Now = calendar:local_time(),
   StartTime = calendar:datetime_to_gregorian_seconds(Now),
   {ok,
@@ -73,6 +86,7 @@ init([Caller, LeaseTime]) ->
       lease_time = LeaseTime,
       start_time = StartTime},
     time_left(StartTime, LeaseTime)}. %% init 将这个State连带超时LeaseTime返回给gen_server:loop
+
 
 time_left(_StartTime, infinity) ->
   infinity;
@@ -130,3 +144,15 @@ terminate(_Reason, _State) ->
 
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
+
+% flush process
+flush(Table) ->
+  try
+    dets:open_file(Table, [access, read_write]),
+    dets:sync(Table),
+    timer:sleep(10000),
+    flush(Table)
+  catch
+    _ : _ ->
+      flush(Table)
+  end.

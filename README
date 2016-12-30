@@ -4,6 +4,8 @@ bug 记录
 element超时退出后，key_to_pid表清理失败；
 
 insert 都是local会出现这种情况：user注册在node1,而添加好友关系在node2
+解决：分布式的insert，从哪儿读回的，就写到哪儿,
+OK
 
 friend_add_impl(User, Frname) 读写导致node间数据不一致: 凡是先读再写的表都有这种问题
 解决：把insert改成广播模式的，使所有节点数据写一致
@@ -11,3 +13,11 @@ friend_add_impl(User, Frname) 读写导致node间数据不一致: 凡是先读�
 element获得的消息如何提醒Caller
 
 my_element_name当element_pid为undefined或name-pid不存在时，会抛异常
+OK
+
+terminate时记录当前状态，启动element进程时，读取上次的状态
+
+supervisor的自启动看起来可以保存上次的MFA，例如start_child，但单节点多个element时应该如何区分不同的element启动？
+sup_ref ??
+
+MFA注册到supervisor中是什么样的？

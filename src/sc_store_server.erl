@@ -26,7 +26,7 @@
 
 %% API
 -export([start_link/0,
-  insert/2,
+  insert/3,
   lookup/2,
   delete/2,
   delete/3,
@@ -70,32 +70,32 @@
 %%% lookup: {ok, tuple}|{error, not_found}
 %%% delete: {noreply, State}
 %%%===================================================================
+%% global insert
 % overload insert, check Param tuple
 % return: ok | error
-insert(key_to_pid, #key_to_pid{} = Param) ->
-  insert_sender(key_to_pid, Param);
-insert(user_auth, #user_auth{} = Param) ->
-  insert_sender(user_auth, Param);
-insert(friend, #friend{fr_names = Frnames} = Param) when is_list(Frnames) ->
-  insert_sender(friend, Param);
-insert(single_chat, #single_chat{} = Param) ->
-  insert_sender(single_chat, Param);
-insert(group_chat, #group_chat{} = Param) ->
-  insert_sender(group_chat, Param);
-insert(group_info, #group_info{members = Members} = Param) when is_list(Members) ->
-  insert_sender(group_info, Param);
+insert(Node, key_to_pid, #key_to_pid{} = Param) ->
+  insert_sender(Node, key_to_pid, Param);
+insert(Node, user_auth, #user_auth{} = Param) ->
+  insert_sender(Node, user_auth, Param);
+insert(Node, friend, #friend{fr_names = Frnames} = Param) when is_list(Frnames) ->
+  insert_sender(Node, friend, Param);
+insert(Node, single_chat, #single_chat{} = Param) ->
+  insert_sender(Node, single_chat, Param);
+insert(Node, group_chat, #group_chat{} = Param) ->
+  insert_sender(Node, group_chat, Param);
+insert(Node, group_info, #group_info{members = Members} = Param) when is_list(Members) ->
+  insert_sender(Node, group_info, Param);
 
-insert(single_chat_record, #single_chat_record{} = Param) ->
-  insert_sender(single_chat_record, Param);
-insert(group_chat_record, #group_chat_record{} = Param) ->
-  insert_sender(group_chat_record, Param).
-
+insert(Node, single_chat_record, #single_chat_record{} = Param) ->
+  insert_sender(Node, single_chat_record, Param);
+insert(Node, group_chat_record, #group_chat_record{} = Param) ->
+  insert_sender(Node, group_chat_record, Param).
 
 % insert req sender
-insert_sender(Table, Args) when is_tuple(Args) ->
-  gen_server:call(?SERVER, {insert, Table, Args}).
+insert_sender(Node, Table, Args) when is_tuple(Args) ->
+  gen_server:call({?SERVER, Node}, {insert, Table, Args}).
 
-% global search
+%% global search
 % return: {ok, {wholeline}, node} | {error, not_found, all_nodes}
 lookup(key_to_pid, Key) when is_atom(Key) ->
   lookup_sender([node()|nodes()], key_to_pid, #key_to_pid{name = Key});
@@ -106,6 +106,7 @@ lookup(friend, Key) when is_atom(Key) ->
 lookup(group_info, Key) when is_integer(Key) ->
   lookup_sender([node()|nodes()], group_info, #group_info{group_id = Key});
 
+% return: {ok, record_list, node} | {error, not_found, all_nodes}
 % 接收参数为table,tuple时，当tuple需要多参数指定，但实际少给了参数，则未给定的是'undefined'，导致select结果空.
 lookup(single_chat, #single_chat{name = _X, other_name = _Y} = Param) ->
   lookup_sender([node()|nodes()], single_chat, Param);
@@ -657,35 +658,35 @@ load_from_file(File) ->
   mnesia:load_textfile(File).
 
 test_insert() ->
-  insert(key_to_pid, #key_to_pid{name='shenglong1', pid = 1}),
-  insert(key_to_pid, #key_to_pid{name='shenglong11', pid = 2}),
+  insert(node(), key_to_pid, #key_to_pid{name='shenglong1', pid = 1}),
+  insert(node(), key_to_pid, #key_to_pid{name='shenglong11', pid = 2}),
 
-  insert(user_auth, #user_auth{name='shenglong1', code = '123qweasd', timestamp = timestamp()}),
-  insert(user_auth, #user_auth{name='Allen', code = '123qweasd', timestamp = timestamp()}),
-  insert(user_auth, #user_auth{name='Bale', code = '123qweasd', timestamp = timestamp()}),
-  insert(user_auth, #user_auth{name='James', code = '123qweasd', timestamp = timestamp()}),
+  insert(node(), user_auth, #user_auth{name='shenglong1', code = '123qweasd', timestamp = timestamp()}),
+  insert(node(), user_auth, #user_auth{name='Allen', code = '123qweasd', timestamp = timestamp()}),
+  insert(node(), user_auth, #user_auth{name='Bale', code = '123qweasd', timestamp = timestamp()}),
+  insert(node(), user_auth, #user_auth{name='James', code = '123qweasd', timestamp = timestamp()}),
 
-  insert(friend, #friend{name = 'shenglong1', fr_names = ['James', 'Allen', 'Bale'], timestamp = timestamp()}),
-  insert(friend, #friend{name = 'Allen', fr_names = ['James', 'Allen', 'Bale'], timestamp = timestamp()}),
-  insert(friend, #friend{name = 'Bale', fr_names = ['James', 'Allen', 'Bale'], timestamp = timestamp()}),
+  insert(node(), friend, #friend{name = 'shenglong1', fr_names = ['James', 'Allen', 'Bale'], timestamp = timestamp()}),
+  insert(node(), friend, #friend{name = 'Allen', fr_names = ['James', 'Allen', 'Bale'], timestamp = timestamp()}),
+  insert(node(), friend, #friend{name = 'Bale', fr_names = ['James', 'Allen', 'Bale'], timestamp = timestamp()}),
 
-  insert(single_chat, #single_chat{name = 'shenglong1', other_name = 'James', chat_id = 111}),
-  insert(single_chat, #single_chat{name = 'shenglong1', other_name = 'Allen', chat_id = 112}),
-  insert(single_chat, #single_chat{name = 'shenglong1', other_name = 'Bale', chat_id = 113}),
+  insert(node(), single_chat, #single_chat{name = 'shenglong1', other_name = 'James', chat_id = 111}),
+  insert(node(), single_chat, #single_chat{name = 'shenglong1', other_name = 'Allen', chat_id = 112}),
+  insert(node(), single_chat, #single_chat{name = 'shenglong1', other_name = 'Bale', chat_id = 113}),
 
-  insert(group_chat, #group_chat{name = 'shenglong1', group = 'mygroup', group_id = 1011}),
+  insert(node(), group_chat, #group_chat{name = 'shenglong1', group = 'mygroup', group_id = 1011}),
 
-  insert(group_info, #group_info{group_id = 1011, members = ['shenglong1', 'James', 'Allen', 'Bale']}),
-  insert(group_info, #group_info{group_id = 1012, members = ['shenglong1', 'Bale']}),
+  insert(node(), group_info, #group_info{group_id = 1011, members = ['shenglong1', 'James', 'Allen', 'Bale']}),
+  insert(node(), group_info, #group_info{group_id = 1012, members = ['shenglong1', 'Bale']}),
 
-  insert(single_chat_record, #single_chat_record{chat_id = 111, from = 'shenglong1', to = 'James', timestamp = timestamp(), online=false, content = 'hello world!'}),
-  insert(single_chat_record, #single_chat_record{chat_id = 111, from = 'James', to = 'shenglong', timestamp = timestamp(), online=false, content = 'received hello world, hello shenglong1'}),
+  insert(node(), single_chat_record, #single_chat_record{chat_id = 111, from = 'shenglong1', to = 'James', timestamp = timestamp(), online=false, content = 'hello world!'}),
+  insert(node(), single_chat_record, #single_chat_record{chat_id = 111, from = 'James', to = 'shenglong', timestamp = timestamp(), online=false, content = 'received hello world, hello shenglong1'}),
 
-  insert(group_chat_record, #group_chat_record{group_id = 1011, from = 'shenglong1', timestamp = timestamp(), online = false, content = 'aaaaaaaaaaa'}),
-  insert(group_chat_record, #group_chat_record{group_id = 1011, from = 'James', timestamp = timestamp(), online = false, content = 'bbbbbbbbbbb'}),
-  insert(group_chat_record, #group_chat_record{group_id = 1011, from = 'Bale', timestamp = timestamp(), online = false, content = 'ccccccccccc'}),
-  insert(group_chat_record, #group_chat_record{group_id = 1011, from = 'Allen', timestamp = timestamp(), online = false, content = 'ddddddddddd'}),
-  insert(group_chat_record, #group_chat_record{group_id = 1011, from = 'shenglong1', timestamp = timestamp(), online = false, content = 'eeeeeeeeeee'}).
+  insert(node(), group_chat_record, #group_chat_record{group_id = 1011, from = 'shenglong1', timestamp = timestamp(), online = false, content = 'aaaaaaaaaaa'}),
+  insert(node(), group_chat_record, #group_chat_record{group_id = 1011, from = 'James', timestamp = timestamp(), online = false, content = 'bbbbbbbbbbb'}),
+  insert(node(), group_chat_record, #group_chat_record{group_id = 1011, from = 'Bale', timestamp = timestamp(), online = false, content = 'ccccccccccc'}),
+  insert(node(), group_chat_record, #group_chat_record{group_id = 1011, from = 'Allen', timestamp = timestamp(), online = false, content = 'ddddddddddd'}),
+  insert(node(), group_chat_record, #group_chat_record{group_id = 1011, from = 'shenglong1', timestamp = timestamp(), online = false, content = 'eeeeeeeeeee'}).
 
 test_lookup() ->
   io:format("~p~n", [lookup(key_to_pid, shenglong1)]),
@@ -729,10 +730,10 @@ test_delete() ->
   delete(group_chat_record, 1011).
 
 test() ->
-  insert(key_to_pid, #key_to_pid{name = shenglong1, pid = 11}),
-  insert(key_to_pid, #key_to_pid{name = shenglong2, pid = 12}),
-  insert(user_auth, #user_auth{name = shenglong1, code = 'code_here1', timestamp = 20161223}),
-  insert(user_auth, #user_auth{name = shenglong2, code = 'code_here2', timestamp = 20161223}).
+  insert(node(), key_to_pid, #key_to_pid{name = shenglong1, pid = 11}),
+  insert(node(), key_to_pid, #key_to_pid{name = shenglong2, pid = 12}),
+  insert(node(), user_auth, #user_auth{name = shenglong1, code = 'code_here1', timestamp = 20161223}),
+  insert(node(), user_auth, #user_auth{name = shenglong2, code = 'code_here2', timestamp = 20161223}).
 
 test_clear() ->
   lists:foreach(fun(X) -> mnesia:clear_table(X) end,

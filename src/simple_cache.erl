@@ -34,7 +34,7 @@
   my_element_name/1,
   send_msg/2,
   broadcast/2,
-  broadcast_impl/3,
+  broadcast_impl/4,
   in_group/2,
   create_group/0,
   destroy_group/0,
@@ -74,7 +74,7 @@ insert(Key, Caller, LeaseTime) ->
     {error, _, _} ->
       % insert: create local
       {ok, Pid} = sc_element:create(Caller, LeaseTime),
-      ok = sc_store_server:insert(key_to_pid, #key_to_pid{name = Key, pid = Pid}),
+      ok = sc_store_server:insert(node(), key_to_pid, #key_to_pid{name = Key, pid = Pid}),
       sc_event:create(Key, Pid, Caller, node())
   end.
 
@@ -110,7 +110,7 @@ login(User, Passwd) ->
     {ok, _, _} ->
       {ok, already_login};
     {error, _, _} ->
-      ok = sc_store_server:insert(user_auth, #user_auth{name = User, code = Passwd, timestamp = sc_store_server:timestamp()}),
+      ok = sc_store_server:insert(node(), user_auth, #user_auth{name = User, code = Passwd, timestamp = sc_store_server:timestamp()}),
       {ok, login}
   end.
 
@@ -133,7 +133,7 @@ sign_in(User, Passwd) ->
             true ->
               % simple_cache和element互相持有对方pid
               {ok, Pid} = sc_element:create(self(), 3600), % TODO: element live 1 hour for test
-              ok = sc_store_server:insert(key_to_pid, #key_to_pid{name = User, pid = Pid}),
+              ok = sc_store_server:insert(node(), key_to_pid, #key_to_pid{name = User, pid = Pid}),
 
               erlang:put(element_pid, Pid),
               {ok, sign_in};
@@ -220,13 +220,13 @@ friend_add_impl(User, Frname) ->
     true ->
       case sc_store_server:lookup(friend, User) of
         %% TODO：会造成数据不一致：node1读到，但本节点是node2写入
-        {ok, {_, Frname_list, _}, _} ->
-          sc_store_server:insert(friend,
+        {ok, {_, Frname_list, _}, Node} ->
+          sc_store_server:insert(Node, friend,
             #friend{name = User,
               fr_names = (lists:delete(Frname, Frname_list) ++ [Frname]),
               timestamp = sc_store_server:timestamp()});
         {error, _, _} ->
-          sc_store_server:insert(friend, #friend{name = User, fr_names = [Frname], timestamp = sc_store_server:timestamp()})
+          sc_store_server:insert(node(), friend, #friend{name = User, fr_names = [Frname], timestamp = sc_store_server:timestamp()})
       end;
     false ->
       error
@@ -258,9 +258,10 @@ id_generate() -> 0.
 % return: Name | undefined
 my_element_name(My_element_pid) ->
   % ele_pid -> ele_name
+  % 所有element Name-Pid 信息必然存在本地
   try
     [#key_to_pid{name = Name}] = mnesia:dirty_index_read(key_to_pid, My_element_pid, #key_to_pid.pid),
-      Name
+    Name
   catch
     _ : _ -> undefined
   end.
@@ -274,16 +275,17 @@ send_msg(Name, Msg) ->
     true ->
 
       % construct chat connection
+      % return {Cid, Node}
       Build_chat_id =
         fun(From, To) ->
           case sc_store_server:lookup(single_chat, #single_chat{name = From, other_name = To}) of
-            {ok, {_, _, Cid}, _} ->
-              Cid;
+            {ok, {_, _, Cid}, Node} ->
+              {Cid, Node};
             {error, _, _} ->
               Cid = id_generate(),
-              sc_store_server:insert(single_chat, #single_chat{name = From, other_name = To, chat_id = Cid}),
-              sc_store_server:insert(single_chat, #single_chat{name = To, other_name = From, chat_id = Cid}),
-              Cid
+              sc_store_server:insert(node(), single_chat, #single_chat{name = From, other_name = To, chat_id = Cid}),
+              sc_store_server:insert(node(), single_chat, #single_chat{name = To, other_name = From, chat_id = Cid}),
+              {Cid, node()}
           end
         end,
 
@@ -295,9 +297,11 @@ send_msg(Name, Msg) ->
           ok = sc_element:send_msg(Pid, Msg),
 
           % TODO: save record and build chat connection
-          sc_store_server:insert(single_chat_record,
+          % write record to node where chat_id was written
+          {Cid, Node} = Build_chat_id(My_name, Name),
+          sc_store_server:insert(Node, single_chat_record,
             #single_chat_record{
-              chat_id = Build_chat_id(My_name, Name),
+              chat_id = Cid,
               from = My_name,
               to = Name,
               timestamp = sc_store_server:timestamp(),
@@ -309,9 +313,10 @@ send_msg(Name, Msg) ->
         false ->
           % TODO: offline msg, 离线消息会保存到single_chat_record中
           % TODO: save record and build chat connection
-          sc_store_server:insert(single_chat_record,
+          {Cid, Node} = Build_chat_id(My_name, Name),
+          sc_store_server:insert(Node, single_chat_record,
             #single_chat_record{
-              chat_id = Build_chat_id(My_name, Name),
+              chat_id = Cid,
               from = My_name,
               to = Name,
               timestamp = sc_store_server:timestamp(),
@@ -333,8 +338,8 @@ broadcast(Group, Msg) ->
     {ok, {_, _, Gid}, _} ->
 
       case sc_store_server:lookup(group_info, Gid) of
-        {ok, {_, Members}, _} ->
-          lists:map(fun(X) -> broadcast_impl(X, Msg, Gid) end, Members),
+        {ok, {_, Members}, Node} ->
+          lists:map(fun(X) -> broadcast_impl(X, Msg, Gid, Node) end, Members),
           {ok, normal};
         {error, _, _} ->
           {error, members_not_found}
@@ -345,7 +350,7 @@ broadcast(Group, Msg) ->
   end.
 
 % TODO: 这个send_msg在线方式不变，发送到Name; 而离线发送时保存到group_chat_record中；
-broadcast_impl(Name, Msg, Gid) ->
+broadcast_impl(Name, Msg, Gid, Node) ->
   % broadcast 模式下的 一对一发送
   % send from My_name to Name
   My_name = my_element_name(erlang:get(element_pid)),
@@ -358,7 +363,7 @@ broadcast_impl(Name, Msg, Gid) ->
           {ok, {_, Pid}, _} = sc_store_server:lookup(key_to_pid, Name),
           ok = sc_element:send_msg(Pid, Msg),
           % TODO: msg还需要保存到mnesia中
-          sc_store_server:insert(group_chat_record,
+          sc_store_server:insert(Node, group_chat_record,
             #group_chat_record{
               group_id = Gid,
               from = My_name,
@@ -368,7 +373,7 @@ broadcast_impl(Name, Msg, Gid) ->
             });
         false ->
           % TODO: offline msg, 离线消息会保存到single_chat_record中
-          sc_store_server:insert(group_chat_record,
+          sc_store_server:insert(Node, group_chat_record,
             #group_chat_record{
               group_id = Gid,
               from = My_name,
@@ -398,6 +403,23 @@ destroy_group() -> ok.
 join_group() -> ok.
 
 quit_group() -> ok.
+
+% TODO: test
+monitor_element(Pid, Fun) ->
+  spawn(
+    fun(F, P) ->
+      process_flag(trap_exit, true),
+      link(Pid),
+      receive
+        {'EXIT', From, Reason} ->
+          receive
+            {sync, Newpid} -> erlang:put(element_pid, Pid);
+            _ -> ok
+          end
+      end
+    end
+  ).
+
 
 
 
