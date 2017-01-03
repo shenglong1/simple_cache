@@ -12,7 +12,12 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/0, start_child/2]).
+-export([
+  start_link/0,
+  start_child/2,
+  delete_child/1,
+  terminate_child/1
+  ]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -47,6 +52,11 @@ start_child(Caller, LeaseTime) ->
   % start all children which sc_element_sup:init returns
   supervisor:start_child(?SERVER, [Caller, LeaseTime]).
 
+delete_child(Id) ->
+  supervisor:delete_child(?SERVER, Id).
+terminate_child(Id) ->
+  supervisor:terminate_child(?SERVER, Id).
+
 %%%===================================================================
 %%% Supervisor callbacks
 %%%===================================================================
@@ -69,7 +79,8 @@ start_child(Caller, LeaseTime) ->
   ignore |
   {error, Reason :: term()}).
 init([]) ->
-  RestartStrategy = one_for_one, % 仅能启动同一种子进程，但可以启动多个
+  % 动态启动(不预启动)，可启动多个同类进程
+  RestartStrategy = simple_one_for_one,
   % 不自动重启
   % MaxRestarts = 0,
   % MaxSecondsBetweenRestarts = 1,
@@ -79,6 +90,7 @@ init([]) ->
 
   SupFlags = {RestartStrategy, MaxRestarts, MaxSecondsBetweenRestarts},
 
+  % 进程异常挂自动拉起
   RestartType = transient,
   % RestartType = permanent, % TODO: test auto startup
   Shutdown = 30,

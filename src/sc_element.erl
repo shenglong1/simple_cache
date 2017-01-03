@@ -33,6 +33,7 @@
 -define(SERVER, ?MODULE).
 -define(DEFAULT_LEASE_TIME, (10)).
 
+-record(key_to_pid, {name, pid, caller}).
 -record(state, {caller, lease_time, start_time}).
 
 %% API
@@ -77,7 +78,19 @@ send_msg(Pid, Msg) ->
 %% callbacks
 init([Caller, LeaseTime]) ->
   % 无论是首次启动(create)或是自动拉起start_link，最终都是到这里，且都提供了Caller参数
+
   % TODO: 如何区分是自动拉起的？如果是自动拉起的就必须通知Caller更新pid
+  % 用caller检查key_to_pid中是否已有记录，已有则看做是进程挂拉起的，需要更新对应项的element_pid
+  case sc_store_server:lookup(key_to_pid, caller, Caller) of
+    {ok, {Name_r, Epid_r, Caller_r}, Node} ->
+      % key_to_pid中已有记录，非首次启动，视为拉起
+      case Epid_r == self() of
+        false ->
+          ok = sc_store_server:insert(Node, key_to_pid, #key_to_pid{name = Name_r, pid = Epid_r, caller = Caller_r})
+      end;
+    {error, _, _} -> first_run_element
+  end,
+
   Now = calendar:local_time(),
   StartTime = calendar:datetime_to_gregorian_seconds(Now),
   {ok,
@@ -120,8 +133,18 @@ handle_cast(delete, State) ->
   {stop, normal, State}. % 返回给gen_server, 会call handle_info
 
 handle_info({send, From, Msg}, State) ->
-  #state{caller = Caller} = State,
-  io:format("[From:~p To:~p]:~p~n", [From, self(), Msg]),
+  % #state{caller = Caller} = State,
+
+  % TODO: 这里即是收到消息后的print
+  case Msg of
+    {From_name, To_name, Real_msg} ->
+      io:format("[From:~p(~p) To:~p(~p)]:~p~n", [From_name, From, To_name, self(), Real_msg]);
+    got ->
+      io:format("message got by remote");
+    _ ->
+      % raw msg
+      io:format("[From:~p To:~p]:~p~n", [From, self(), Msg])
+  end,
 
   case is_pid(From) of
     true ->
@@ -130,7 +153,7 @@ handle_info({send, From, Msg}, State) ->
   end,
 
   % notify local Caller
-  erlang:send(Caller, {recv, From, Msg}),
+  % erlang:send(Caller, {recv, From, Msg}),
   {noreply, State};
 
 handle_info(timeout, State) ->
@@ -138,8 +161,10 @@ handle_info(timeout, State) ->
   {stop, normal, State}. % call terminate
 
 terminate(_Reason, _State) ->
-  sc_store_server:delete(key_to_pid, self()),
-  % TODO: 保存内存中的数据,Caller
+  % 正常终止，告知element
+  ok = sc_element_sup:terminate_child(self()),
+  ok = sc_element_sup:delete_child(self()),
+  ok = sc_store_server:delete(key_to_pid, self()),
   ok.
 
 code_change(_OldVsn, State, _Extra) ->
