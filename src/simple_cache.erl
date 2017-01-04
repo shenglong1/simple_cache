@@ -40,7 +40,8 @@
   destroy_group/0,
   join_group/0,
   quit_group/0,
-  update_element_pid/0
+  update_element_pid/0,
+  get_offline_msgs/1
 ]).
 
 -record(key_to_pid, {name, pid, caller}). %　在线用户列表
@@ -118,14 +119,65 @@ is_logined(User) ->
     {error, _, _} -> false
   end.
 
+get_offline_msgs(Name) ->
+  % TODO: need test, get Name's all offline msgs
+  % return [Records] | []
+  Query_by_cid =
+    fun(Cid, User) ->
+      case sc_store_server:lookup(single_chat_record, Cid) of
+        [] -> [];
+        Records ->
+          lists:foreach(
+            fun(R) ->
+              case R#single_chat_record.to =:= User of
+                true -> R;
+                false -> []
+              end
+            end, Records)
+      end
+    end,
+
+  case sc_store_server:lookup(single_chat, Name) of
+    [] ->
+      [];
+    Records ->
+      case lists:foreach(fun(R) -> #single_chat{chat_id = Cid} = R, Cid end, Records) of
+        [] -> [];
+        Cid_list ->
+          % return: [[Records], [Records]]
+          lists:foreach(fun(X) -> Query_by_cid(X, Name) end, Cid_list)
+      end
+  end.
+
 sign_in(User, Passwd) ->
   % 登录
   % 在哪儿登录，key_to_pid就记在哪个节点
   case sc_store_server:lookup(user_auth, User) of
     {ok, {_, Code, _}, _} ->
       case sc_store_server:lookup(key_to_pid, name, User) of
-        {ok, _, _} -> {ok, already_running};
+        {ok, {_, Pid, Caller}, _} ->
+
+          case rpc:call(node(Pid), erlang, is_process_alive, [Pid]) of
+            true ->
+              {ok, already_running};
+            false ->
+              % after abnormal reboot
+              case Code == Passwd of
+                true ->
+                  % TODO: 这里有两次修复key_to_pid登录数据，create中和sign_in中
+                  % sign_in按照user修整条记录
+                  {ok, New_pid} = sc_element:create(self(), 3600), % TODO: element live 1 hour for test
+                  erlang:put(element_pid, New_pid),
+                  ok = sc_store_server:insert(node(), key_to_pid, #key_to_pid{name = User, pid = New_pid, caller = self()}),
+
+                  {ok, sign_in_after_abnormal_reboot};
+                false ->
+                  {error, passwd_err}
+              end
+          end;
+
         {error, _, _} ->
+          % key_to_pid没有记录，是首次登陆
           % 先检查密码
           case Code == Passwd of
             true ->
@@ -145,15 +197,21 @@ sign_in(User, Passwd) ->
   end.
 
 sign_out(User) ->
+  % bug: 可以异地sign_out，且没有任何验证
   case sc_store_server:lookup(user_auth, User) of
     {ok, _, _} ->
       case sc_store_server:lookup(key_to_pid, name, User) of
-        {ok, {Name, Pid, _}, _} ->
-          sc_element:delete(Pid),
-          sc_store_server:delete(key_to_pid, Name),
+        {ok, {Name, Pid, Caller}, _} ->
 
-          erlang:erase(element_pid),
-          {ok, sign_out};
+          case Caller == self() of
+            true ->
+              sc_element:delete(Pid),
+              sc_store_server:delete(key_to_pid, Name),
+              erlang:erase(element_pid),
+              {ok, sign_out};
+            false ->
+              {error, not_my_element}
+          end;
         {error, _, _} ->
           {ok, already_sign_out}
       end;
@@ -166,7 +224,7 @@ client_running(User) ->
     case sc_store_server:lookup(user_auth, User) of
       {ok, _, _} ->
         case sc_store_server:lookup(key_to_pid, name, User) of
-          {ok, _, _} -> true;
+          {ok, {_, Pid, _}, _} -> rpc:call(node(Pid), erlang, is_process_alive, [Pid]);
           {error, _, _} -> false
         end;
       {error, _, _} -> false
@@ -294,7 +352,7 @@ send_msg(Name, Msg) ->
         true ->
           % online msg
           {ok, {_, Pid, _}, _} = sc_store_server:lookup(key_to_pid, name, Name),
-          sc_element:send_msg(Pid, {My_name, Name, Msg}),
+          sc_element:send_msg(Pid, {My_name, Name, Msg}, erlang:get(element_pid)),
 
           % TODO: save record and build chat connection
           % write record to node where chat_id was written
@@ -361,7 +419,7 @@ broadcast_impl(Name, Msg, Gid, Node) ->
         true ->
           % online msg
           {ok, {_, Pid, _}, _} = sc_store_server:lookup(key_to_pid, name, Name),
-          sc_element:send_msg(Pid, Msg),
+          sc_element:send_msg(Pid, Msg, erlang:get(element_pid)),
           % TODO: msg还需要保存到mnesia中
           sc_store_server:insert(Node, group_chat_record,
             #group_chat_record{

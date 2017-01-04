@@ -23,7 +23,8 @@
   dump_to_file/1,
   load_from_file/1,
   list_delete/2,
-  is_pid_alive/1
+  is_pid_alive/1,
+  lookup_distributor/4
 ]).
 
 %% API
@@ -112,7 +113,7 @@ lookup(friend, Key) when is_atom(Key) ->
 lookup(group_info, Key) when is_integer(Key) ->
   lookup_sender([node()|nodes()], group_info, #group_info{group_id = Key});
 
-% return: {ok, record_list, node} | {error, not_found, all_nodes}
+% return: {ok, wholeline, node} | {error, not_found, all_nodes}
 % 接收参数为table,tuple时，当tuple需要多参数指定，但实际少给了参数，则未给定的是'undefined'，导致select结果空.
 lookup(single_chat, #single_chat{name = _X, other_name = _Y} = Param) ->
   lookup_sender([node()|nodes()], single_chat, Param);
@@ -123,8 +124,19 @@ lookup(group_chat, #group_chat{name = _X, group = _Y} = Param) ->
 lookup(single_chat_record, #single_chat_record{chat_id = _X} = Param) ->
   lookup_sender([node()|nodes()], single_chat_record, Param);
 lookup(group_chat_record, #group_chat_record{group_id = _X} = Param) ->
-  lookup_sender([node()|nodes()], group_chat_record, Param).
+  lookup_sender([node()|nodes()], group_chat_record, Param);
 
+% return: record list | []
+lookup(single_chat, Name) ->
+  lookup_distributor([node()|nodes()], single_chat, Name, []);
+lookup(group_chat, Name) ->
+  lookup_distributor([node()|nodes()], group_chat, Name, []);
+lookup(single_chat_record, Cid) ->
+  lookup_distributor([node()|nodes()], single_chat_record, Cid, []);
+lookup(group_chat_record, Gid) ->
+  lookup_distributor([node()|nodes()], group_chat_record, Gid, []).
+
+% 集中式的sender，在一个node获取即返回
 lookup_sender([], Table, Keys) when is_tuple(Keys) ->
   % send to local
   case gen_server:call({?SERVER, node()}, {lookup, Table, Keys}) of
@@ -143,6 +155,20 @@ lookup_sender([N|OtherNodes], Table, Keys) when is_tuple(Keys) ->
     % _: Why -> {unknown, Why}
     _ : _Why -> lookup_sender(OtherNodes, Table, Keys) % 忽略noproc而异常的查询节点，继续查下去
   end.
+
+% 分布式的sender，在多个node获取才返回
+% return: record list | []
+lookup_distributor([Node|T], Table, Key, Res) when is_list(Res) ->
+  try gen_server:call({?SERVER, Node}, {lookup, Table, Key}) of
+    {ok, Record_list} -> lookup_distributor(T, Table, Key, Record_list ++ Res);
+    {error, not_found} -> lookup_distributor(T, Table, Key, Res)
+  catch
+    _A : _B -> lookup_distributor(T, Table, Key, Res)
+  end;
+lookup_distributor([], _, _, Res) when is_list(Res) -> Res.
+
+
+% broadcast lookup
 
 % broadcast delete
 % return: null
@@ -226,13 +252,13 @@ init([]) ->
   application:set_env(mnesia, dir, '../db'),
   mnesia:start(),
   %% {ok, Nodes} = resource_discovery:fetch_resources(simple_cache),
-  Nodes = nodes(),
+  _Nodes = nodes(),
     catch(mnesia:change_table_copy_type(schema, node(), disc_copies)),
   create_all_tables(),
   _Tables = mnesia:system_info(local_tables),
-  % TODO: it should be checked _Tables are all tables
 
-  dynamic_db_init(lists:delete(node(), Nodes)),
+  % TODO: do not connect all node, need no synchronize
+  % dynamic_db_init(lists:delete(node(), Nodes)),
   {ok, {}}.
 
 %%--------------------------------------------------------------------
@@ -358,6 +384,15 @@ handle_call({lookup, group_chat_record, #group_chat_record{group_id = Gid}}, _Fr
     Record_list -> {reply, {ok, Record_list}, State}
   catch
     _ : _ -> {reply, {error, not_found}, State}
+  end;
+
+% query by primary key
+handle_call({lookup, Table, Key}, _From, State) ->
+  try mnesia:dirty_read(Table, Key) of
+    [] -> {reply, {error, not_found}, State};
+    Record_list -> {reply, {ok, Record_list}, State}
+  catch
+    _ : _ -> {reply, {error, not_found}, State}
   end.
 
 %%--------------------------------------------------------------------
@@ -375,8 +410,8 @@ handle_call({lookup, group_chat_record, #group_chat_record{group_id = Gid}}, _Fr
 handle_cast({delete, key_to_pid, #key_to_pid{name = Name, pid = Pid}}, State) ->
   % try to delete by name or pid
   try mnesia:dirty_read(key_to_pid, Name) of
-    [#key_to_pid{name = Name_ret, pid = Pid_ret}] ->
-      mnesia:dirty_delete_object(key_to_pid, #key_to_pid{name = Name_ret, pid = Pid_ret}),
+    [#key_to_pid{} = Record] ->
+      mnesia:dirty_delete_object(key_to_pid, Record),
       {noreply, State};
     [] ->
       case mnesia:dirty_index_read(key_to_pid, Pid, #key_to_pid.pid) of
@@ -626,7 +661,7 @@ dynamic_db_init(OtherNodes) ->
   add_extra_nodes(OtherNodes).
 
 add_extra_nodes([Node|T]) ->
-  case mnesia:change_config(extra_db_nodes, [Node]) of % 连接无库新点
+  case mnesia:change_config(extra_db_nodes, [Node]) of % connect db on Node
     {ok, [Node]} ->
       lists:map(
         fun(Table) -> mnesia:add_table_copy(Table, node(), disc_copies) end,

@@ -22,7 +22,7 @@
   fetch/1,
   replace/2,
   delete/1,
-  send_msg/2,
+  send_msg/3,
   flush/1
 ]).
 
@@ -72,8 +72,8 @@ delete(Pid) ->
   gen_server:cast(Pid, delete).
 
 %%% communicate API
-send_msg(Pid, Msg) ->
-  erlang:send(Pid, {send, self(), Msg}).
+send_msg(Pid, Msg, Epid) ->
+  erlang:send(Pid, {send, Epid, Msg}). % TODO: bug这里并没有进入element进程，还是属于caller进程；
 
 %% callbacks
 init([Caller, LeaseTime]) ->
@@ -86,7 +86,8 @@ init([Caller, LeaseTime]) ->
       % key_to_pid中已有记录，非首次启动，视为拉起
       case Epid_r == self() of
         false ->
-          ok = sc_store_server:insert(Node, key_to_pid, #key_to_pid{name = Name_r, pid = Epid_r, caller = Caller_r})
+          % 按照caller修复pid-caller
+          ok = sc_store_server:insert(Node, key_to_pid, #key_to_pid{name = Name_r, pid = self(), caller = Caller_r})
       end;
     {error, _, _} -> first_run_element
   end,
@@ -140,7 +141,7 @@ handle_info({send, From, Msg}, State) ->
     {From_name, To_name, Real_msg} ->
       io:format("[From:~p(~p) To:~p(~p)]:~p~n", [From_name, From, To_name, self(), Real_msg]);
     got ->
-      io:format("message got by remote");
+      io:format("message got by remote~n"); %TODO: can not print ?
     _ ->
       % raw msg
       io:format("[From:~p To:~p]:~p~n", [From, self(), Msg])
@@ -149,7 +150,7 @@ handle_info({send, From, Msg}, State) ->
   case is_pid(From) of
     true ->
       % ack
-      erlang:send(From, {send, noreply, got})
+      erlang:send(From, {send, noreply, got}) % TODO: cannot send? 由于sc_element:send_msg 中实际上还是在simple_cache进程中，但是用了self()，所以回复都是发给simple_cache了
   end,
 
   % notify local Caller

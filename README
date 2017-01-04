@@ -9,15 +9,33 @@ OK
 
 friend_add_impl(User, Frname) 读写导致node间数据不一致: 凡是先读再写的表都有这种问题
 解决：把insert改成广播模式的，使所有节点数据写一致
+OK
 
 element获得的消息如何提醒Caller
+解决：普通io:format
 
 my_element_name当element_pid为undefined或name-pid不存在时，会抛异常
 OK
 
 terminate时记录当前状态，启动element进程时，读取上次的状态
+由element_sup来记录
 
 supervisor的自启动看起来可以保存上次的MFA，例如start_child，但单节点多个element时应该如何区分不同的element启动？
 sup_ref ??
 
 MFA注册到supervisor中是什么样的？
+
+为何element:create新建进程失败？
+为何一起动就有一个element进程？
+
+因为用了one_for_one，会自己启动一个进程，且之后不允许动态添加，该模式是预启动多个不同类型进程。
+解决：
+应该使用simple_one_for_one，动态添加（不预启动）多个同类进程。
+
+用户下线后是否能正确删除key_to_pid中的记录?
+解决：
+正常退出时可以，异常不可以
+
+sc_store_server中专门有个进程来监控key_to_pid中elementpid和caller存活，维护ele/caller挂情况下的key_to_pid表
+
+element重启后，如何通知simple_cache更新element_pid
