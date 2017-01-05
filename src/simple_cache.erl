@@ -119,8 +119,8 @@ is_logined(User) ->
     {error, _, _} -> false
   end.
 
+% TODO: need test, get Name's all offline msgs
 get_offline_msgs(Name) ->
-  % TODO: need test, get Name's all offline msgs
   % return [Records] | []
   Query_by_cid =
     fun(Cid, User) ->
@@ -310,7 +310,11 @@ friend_del_impl(User, Frname) ->
 
 id_generate(N) ->
   % TODO: auto generate id
-  random:uniform(N).
+  Cid = random:uniform(N),
+  case sc_store_server:lookup(single_chat_record, Cid) of
+    [] -> Cid;
+    _ -> id_generate(N)
+  end.
 
 % 获取当前element进程Pid对应的Name
 % return: Name | undefined
