@@ -44,7 +44,7 @@
   get_offline_msgs/1
 ]).
 
--record(key_to_pid, {name, pid, caller}). %　在线用户列表
+-record(key_to_pid, {name, pid}). %　在线用户列表
 -record(user_auth, {name, code, timestamp}). % 所有用户列表
 -record(friend, {name, fr_names, timestamp}). % fr_names is list
 -record(group_info, {group_id, members}).
@@ -58,32 +58,32 @@
 -record(group_chat_record, {group_id, from, timestamp, online, content}).
 
 %% API for time lease,
-%% insert/lookup/delete 使用element维护Caller/LeaseTime的接口
+%% insert/lookup/delete 使用element维护Name/LeaseTime的接口
 % 在simple_cache看来，不知道element进程细节，所以所有操作都是跨进程的，
 % 由element使用gen_server来协调
-insert(Key, Caller) ->
-  insert(Key, Caller, ?LEASETIME).
+insert(Key, Value) ->
+  insert(Key, Value, ?LEASETIME).
 
-insert(Key, Caller, LeaseTime) ->
+insert(Key, Value, LeaseTime) ->
   case sc_store_server:lookup(key_to_pid, name, Key) of
-    {ok, {_, Pid, _}, Node} ->
+    {ok, {_, Pid}, Node} ->
       % update: global Pid, global element:replace
-      sc_element:replace(Pid, Caller),
-      sc_event:replace(Key, Pid, Caller, Node);
+      sc_element:replace(Pid, Value),
+      sc_event:replace(Key, Pid, Value, Node);
     {error, _, _} ->
       % insert: create local
-      {ok, Pid} = sc_element:create(Caller, LeaseTime),
-      ok = sc_store_server:insert(node(), key_to_pid, #key_to_pid{name = Key, pid = Pid, caller = Caller}),
-      sc_event:create(Key, Pid, Caller, node())
+      {ok, Pid} = sc_element:create(Value, LeaseTime),
+      ok = sc_store_server:insert(node(), key_to_pid, #key_to_pid{name = Key, pid = Pid}),
+      sc_event:create(Key, Pid, Value, node())
   end.
 
 lookup(Key) ->
   % provide global search {Key, Pid, Value, Node}
   try
-    {ok, {_, Pid, _}, Node} = sc_store_server:lookup(key_to_pid, name, Key),
-    {ok, Caller} = sc_element:fetch(Pid),
-    sc_event:lookup(Key, Pid, Caller, Node),
-    {ok, Caller}
+    {ok, {_, Pid}, Node} = sc_store_server:lookup(key_to_pid, name, Key),
+    {ok, Value} = sc_element:fetch(Pid),
+    sc_event:lookup(Key, Pid, Value, Node),
+    {ok, Value}
   catch
     _Class:_Exception ->
       {error, not_found}
@@ -92,14 +92,13 @@ lookup(Key) ->
 delete(Key) ->
   % global delete and terminate Pid
   case sc_store_server:lookup(key_to_pid, name, Key) of
-    {ok, {_, Pid, _}, Node} ->
+    {ok, {_, Pid}, Node} ->
       sc_store_server:delete(key_to_pid, Key),
       sc_element:delete(Pid),
       sc_event:delete(Key, Pid, Node);
     {error, _Reason, _} ->
       not_found
   end.
-
 
 %% API for IM
 % return {ok, Reason} | {error, Reason}
@@ -155,7 +154,7 @@ sign_in(User, Passwd) ->
   case sc_store_server:lookup(user_auth, User) of
     {ok, {_, Code, _}, _} ->
       case sc_store_server:lookup(key_to_pid, name, User) of
-        {ok, {_, Pid, Caller}, _} ->
+        {ok, {_, Pid}, _} ->
 
           case rpc:call(node(Pid), erlang, is_process_alive, [Pid]) of
             true ->
@@ -166,9 +165,9 @@ sign_in(User, Passwd) ->
                 true ->
                   % TODO: 这里有两次修复key_to_pid登录数据，create中和sign_in中
                   % sign_in按照user修整条记录
-                  {ok, New_pid} = sc_element:create(self(), 3600), % TODO: element live 1 hour for test
+                  {ok, New_pid} = sc_element:create(User, 3600), % TODO: element live 1 hour for test
                   erlang:put(element_pid, New_pid),
-                  ok = sc_store_server:insert(node(), key_to_pid, #key_to_pid{name = User, pid = New_pid, caller = self()}),
+                  ok = sc_store_server:insert(node(), key_to_pid, #key_to_pid{name = User, pid = New_pid}),
 
                   {ok, sign_in_after_abnormal_reboot};
                 false ->
@@ -183,9 +182,9 @@ sign_in(User, Passwd) ->
             true ->
               % simple_cache和element互相持有对方pid
               % error
-              {ok, Pid} = sc_element:create(self(), 3600), % TODO: element live 1 hour for test
+              {ok, Pid} = sc_element:create(User, 3600), % TODO: element live 1 hour for test
               erlang:put(element_pid, Pid),
-              ok = sc_store_server:insert(node(), key_to_pid, #key_to_pid{name = User, pid = Pid, caller = self()}),
+              ok = sc_store_server:insert(node(), key_to_pid, #key_to_pid{name = User, pid = Pid}),
 
               {ok, sign_in};
             false ->
@@ -201,17 +200,12 @@ sign_out(User) ->
   case sc_store_server:lookup(user_auth, User) of
     {ok, _, _} ->
       case sc_store_server:lookup(key_to_pid, name, User) of
-        {ok, {Name, Pid, Caller}, _} ->
+        {ok, {Name, Pid}, _} ->
 
-          case Caller == self() of
-            true ->
-              sc_element:delete(Pid),
-              sc_store_server:delete(key_to_pid, Name),
-              erlang:erase(element_pid),
-              {ok, sign_out};
-            false ->
-              {error, not_my_element}
-          end;
+          sc_element:delete(Pid),
+          sc_store_server:delete(key_to_pid, Name),
+          erlang:erase(element_pid),
+          {ok, sign_out};
         {error, _, _} ->
           {ok, already_sign_out}
       end;
@@ -224,7 +218,7 @@ client_running(User) ->
     case sc_store_server:lookup(user_auth, User) of
       {ok, _, _} ->
         case sc_store_server:lookup(key_to_pid, name, User) of
-          {ok, {_, Pid, _}, _} -> rpc:call(node(Pid), erlang, is_process_alive, [Pid]);
+          {ok, {_, Pid}, _} -> rpc:call(node(Pid), erlang, is_process_alive, [Pid]);
           {error, _, _} -> false
         end;
       {error, _, _} -> false
@@ -355,7 +349,7 @@ send_msg(Name, Msg) ->
       case client_running(Name) of
         true ->
           % online msg
-          {ok, {_, Pid, _}, _} = sc_store_server:lookup(key_to_pid, name, Name),
+          {ok, {_, Pid}, _} = sc_store_server:lookup(key_to_pid, name, Name),
           sc_element:send_msg(Pid, {My_name, Name, Msg}, erlang:get(element_pid)),
 
           % TODO: save record and build chat connection
@@ -422,7 +416,7 @@ broadcast_impl(Name, Msg, Gid, Node) ->
       case client_running(Name) of
         true ->
           % online msg
-          {ok, {_, Pid, _}, _} = sc_store_server:lookup(key_to_pid, name, Name),
+          {ok, {_, Pid}, _} = sc_store_server:lookup(key_to_pid, name, Name),
           sc_element:send_msg(Pid, Msg, erlang:get(element_pid)),
           % TODO: msg还需要保存到mnesia中
           sc_store_server:insert(Node, group_chat_record,
@@ -486,7 +480,7 @@ monitor_element(Pid, Fun) ->
 % return: ok | error
 update_element_pid() ->
   case sc_store_server:lookup(key_to_pid, caller, self()) of
-    {ok, {_, Epid_r, _}, _} ->
+    {ok, {_, Epid_r}, _} ->
       case Epid_r == erlang:get(element_pid) of
         false ->
           erlang:put(element_pid, Epid_r)

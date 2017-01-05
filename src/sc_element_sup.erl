@@ -45,12 +45,12 @@ start_link() ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec(start_child(Caller :: pid(), LeaseTime :: integer()) ->
+-spec(start_child(Name :: term(), LeaseTime :: integer()) ->
   {ok, Pid :: pid()} | {error, Reason :: term()}
 ).
-start_child(Caller, LeaseTime) ->
+start_child(Name, LeaseTime) ->
   % start all children which sc_element_sup:init returns
-  supervisor:start_child(?SERVER, [Caller, LeaseTime]).
+  supervisor:start_child(?SERVER, [Name, LeaseTime]).
 
 delete_child(Id) ->
   supervisor:delete_child(?SERVER, Id).

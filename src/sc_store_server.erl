@@ -47,7 +47,7 @@
 -define(SERVER, ?MODULE).
 -define(WAIT_FOR_TABLES, 5000).
 
--record(key_to_pid, {name, pid, caller}).
+-record(key_to_pid, {name, pid}).
 -record(user_auth, {name, code, timestamp}).
 -record(friend, {name, fr_names, timestamp}). % fr_names is list
 -record(group_info, {group_id, members}).
@@ -100,11 +100,9 @@ insert_sender(Node, Table, Args) when is_tuple(Args) ->
 %% global search
 % return: {ok, {wholeline}, node} | {error, not_found, all_nodes}
 lookup(key_to_pid, name, Key) when is_atom(Key) ->
-  lookup_sender([node()|nodes()], key_to_pid, #key_to_pid{name = Key, pid = undefined, caller = undefined});
+  lookup_sender([node()|nodes()], key_to_pid, #key_to_pid{name = Key, pid = undefined});
 lookup(key_to_pid, epid, Epid) when is_pid(Epid) ->
-  lookup_sender([node()|nodes()], key_to_pid, #key_to_pid{name = undefined, pid = Epid, caller = undefined});
-lookup(key_to_pid, caller, Caller) when is_pid(Caller) ->
-  lookup_sender([node()|nodes()], key_to_pid, #key_to_pid{name = undefined, pid = undefined, caller = Caller}).
+  lookup_sender([node()|nodes()], key_to_pid, #key_to_pid{name = undefined, pid = Epid}).
 
 lookup(user_auth, Key) when is_atom(Key) ->
   lookup_sender([node()|nodes()], user_auth, #user_auth{name = Key});
@@ -302,26 +300,18 @@ handle_call({insert, Table, Tuple}, _From, State) ->
 % lookup returns {reply, {ok, {wholeline}}, State} | {reply, {error, not_found}, State}
 handle_call({lookup, key_to_pid, #key_to_pid{} = Record}, _From, State) ->
   case Record of
-    #key_to_pid{name = Name, pid = undefined, caller = undefined} ->
+    #key_to_pid{name = Name, pid = undefined} ->
       case mnesia:dirty_read(key_to_pid, Name) of
-        [#key_to_pid{name = Name_r, pid = Pid_r, caller = Caller_r}] ->
-          {reply, {ok, {Name_r, Pid_r, Caller_r}}, State};
+        [#key_to_pid{name = Name_r, pid = Pid_r}] ->
+          {reply, {ok, {Name_r, Pid_r}}, State};
         [] ->
           {reply, {error, not_found}, State}
       end;
 
-    #key_to_pid{name = undefined, pid = Epid, caller = undefined} ->
+    #key_to_pid{name = undefined, pid = Epid} ->
       case mnesia:dirty_index_read(key_to_pid, Epid, #key_to_pid.pid) of
-        [#key_to_pid{name = Name_r, pid = Pid_r, caller = Caller_r}] ->
-          {reply, {ok, {Name_r, Pid_r, Caller_r}}, State};
-        [] ->
-          {reply, {error, not_found}, State}
-      end;
-
-    #key_to_pid{name = undefined, pid = undefined, caller = Caller} ->
-      case mnesia:dirty_index_read(key_to_pid, Caller, #key_to_pid.caller) of
-        [#key_to_pid{name = Name_r, pid = Pid_r, caller = Caller_r}] ->
-          {reply, {ok, {Name_r, Pid_r, Caller_r}}, State};
+        [#key_to_pid{name = Name_r, pid = Pid_r}] ->
+          {reply, {ok, {Name_r, Pid_r}}, State};
         [] ->
           {reply, {error, not_found}, State}
       end
@@ -606,7 +596,7 @@ create_all_tables() ->
     [
       {type, set},
       {disc_copies, [node()]},
-      {index, [#key_to_pid.pid, #key_to_pid.caller]},
+      {index, [#key_to_pid.pid]},
       {attributes, record_info(fields, key_to_pid)}
     ])),
     catch(mnesia:create_table(user_auth,
@@ -712,8 +702,8 @@ load_from_file(File) ->
   mnesia:load_textfile(File).
 
 test_insert() ->
-  insert(node(), key_to_pid, #key_to_pid{name='shenglong1', pid = 1, caller = 1}),
-  insert(node(), key_to_pid, #key_to_pid{name='shenglong11', pid = 2, caller = 2}),
+  insert(node(), key_to_pid, #key_to_pid{name='shenglong1', pid = 1}),
+  insert(node(), key_to_pid, #key_to_pid{name='shenglong11', pid = 2}),
 
   insert(node(), user_auth, #user_auth{name='shenglong1', code = '123qweasd', timestamp = timestamp()}),
   insert(node(), user_auth, #user_auth{name='Allen', code = '123qweasd', timestamp = timestamp()}),
@@ -784,8 +774,8 @@ test_delete() ->
   delete(group_chat_record, 1011).
 
 test() ->
-  insert(node(), key_to_pid, #key_to_pid{name = shenglong1, pid = 11, caller = 11}),
-  insert(node(), key_to_pid, #key_to_pid{name = shenglong2, pid = 12, caller = 12}),
+  insert(node(), key_to_pid, #key_to_pid{name = shenglong1, pid = 11}),
+  insert(node(), key_to_pid, #key_to_pid{name = shenglong2, pid = 12}),
   insert(node(), user_auth, #user_auth{name = shenglong1, code = 'code_here1', timestamp = 20161223}),
   insert(node(), user_auth, #user_auth{name = shenglong2, code = 'code_here2', timestamp = 20161223}).
 
