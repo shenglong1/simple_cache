@@ -30,16 +30,17 @@
   friend_add_impl/2,
   friend_del/2,
   friend_del_impl/2,
-  id_generate/1,
-  my_element_name/1,
+  id_generate/2,
+  id_generate2/1,
+  my_element_pid/0,
   send_msg/2,
   broadcast/2,
   broadcast_impl/4,
   in_group/2,
-  create_group/0,
-  destroy_group/0,
-  join_group/0,
-  quit_group/0,
+  create_group/1,
+  destroy_group/1,
+  join_group/1,
+  quit_group/1,
   update_element_pid/0,
   get_offline_msgs/1
 ]).
@@ -47,7 +48,7 @@
 -record(key_to_pid, {name, pid}). %　在线用户列表
 -record(user_auth, {name, code, timestamp}). % 所有用户列表
 -record(friend, {name, fr_names, timestamp}). % fr_names is list
--record(group_info, {group_id, members}).
+-record(group_info, {group_id, group_name, members}).
 
 % chat_id 是临时的，首次发起会话时建立
 -record(single_chat, {name, other_name, chat_id}). % 同时需要添加name-other,other-name
@@ -166,8 +167,8 @@ sign_in(User, Passwd) ->
                   % TODO: 这里有两次修复key_to_pid登录数据，create中和sign_in中
                   % sign_in按照user修整条记录
                   {ok, New_pid} = sc_element:create(User, 3600), % TODO: element live 1 hour for test
-                  erlang:put(element_pid, New_pid),
                   ok = sc_store_server:insert(node(), key_to_pid, #key_to_pid{name = User, pid = New_pid}),
+                  erlang:put(name, User),
 
                   {ok, sign_in_after_abnormal_reboot};
                 false ->
@@ -183,8 +184,8 @@ sign_in(User, Passwd) ->
               % simple_cache和element互相持有对方pid
               % error
               {ok, Pid} = sc_element:create(User, 3600), % TODO: element live 1 hour for test
-              erlang:put(element_pid, Pid),
               ok = sc_store_server:insert(node(), key_to_pid, #key_to_pid{name = User, pid = Pid}),
+              erlang:put(name, User),
 
               {ok, sign_in};
             false ->
@@ -204,7 +205,7 @@ sign_out(User) ->
 
           sc_element:delete(Pid),
           sc_store_server:delete(key_to_pid, Name),
-          erlang:erase(element_pid),
+          erlang:erase(name),
           {ok, sign_out};
         {error, _, _} ->
           {ok, already_sign_out}
@@ -255,6 +256,7 @@ is_friend(User, Frname) ->
 
 % return: {ok, Reason} | {error, Reason}
 % 双向添加好友
+% 已有friend的登记的User，它在哪个node，其所有好友就被添加到这个node.friend.User名下
 friend_add(User, Frname) ->
   try
     ok = friend_add_impl(User, Frname),
@@ -302,22 +304,23 @@ friend_del_impl(User, Frname) ->
     false -> error
   end.
 
-id_generate(N) ->
+% Ref_table: single_chat_record | group_chat_record
+id_generate(N, Ref_table) ->
   % TODO: auto generate id
-  Cid = random:uniform(N),
-  case sc_store_server:lookup(single_chat_record, Cid) of
-    [] -> Cid;
-    _ -> id_generate(N)
+  Id = random:uniform(N),
+  case sc_store_server:lookup(Ref_table, Id) of
+    [] -> Id;
+    _ -> id_generate(N, Ref_table)
   end.
 
 % 获取当前element进程Pid对应的Name
 % return: Name | undefined
-my_element_name(My_element_pid) ->
+my_element_pid() ->
   % ele_pid -> ele_name
   % 所有element Name-Pid 信息必然存在本地
   try
-    [#key_to_pid{name = Name}] = mnesia:dirty_index_read(key_to_pid, My_element_pid, #key_to_pid.pid),
-    Name
+    [#key_to_pid{pid = Pid}] = mnesia:dirty_read(key_to_pid, erlang:get(name)),
+    Pid
   catch
     _ : _ -> undefined
   end.
@@ -326,7 +329,7 @@ my_element_name(My_element_pid) ->
 % return: {ok, Reason} | {error, Reason}
 send_msg(Name, Msg) ->
   % send from My_name to Name
-  My_name = my_element_name(erlang:get(element_pid)),
+  My_name = erlang:get(name),
   case is_logined(My_name) and is_logined(Name) and is_friend(My_name, Name) of
     true ->
 
@@ -338,7 +341,7 @@ send_msg(Name, Msg) ->
             {ok, {_, _, Cid}, Node} ->
               {Cid, Node};
             {error, _, _} ->
-              Cid = id_generate(10000),
+              Cid = id_generate(10000, single_chat_record),
               sc_store_server:insert(node(), single_chat, #single_chat{name = From, other_name = To, chat_id = Cid}),
               sc_store_server:insert(node(), single_chat, #single_chat{name = To, other_name = From, chat_id = Cid}),
               {Cid, node()}
@@ -350,10 +353,11 @@ send_msg(Name, Msg) ->
         true ->
           % online msg
           {ok, {_, Pid}, _} = sc_store_server:lookup(key_to_pid, name, Name),
-          sc_element:send_msg(Pid, {My_name, Name, Msg}, erlang:get(element_pid)),
+          sc_element:send_msg(Pid, {My_name, Name, Msg}, my_element_pid()),
 
           % TODO: save record and build chat connection
           % write record to node where chat_id was written
+          % 新增的record始终和其chat_id记录在同一个node
           {Cid, Node} = Build_chat_id(My_name, Name),
           sc_store_server:insert(Node, single_chat_record,
             #single_chat_record{
@@ -389,27 +393,27 @@ send_msg(Name, Msg) ->
 % return: {ok, Reason} | {error, Reason}
 broadcast(Group, Msg) ->
   % find Gid and Members
-  My_name = my_element_name(erlang:get(element_pid)),
+  My_name = erlang:get(name),
   case sc_store_server:lookup(group_chat, #group_chat{name = My_name, group = Group}) of
     {ok, {_, _, Gid}, _} ->
 
-      case sc_store_server:lookup(group_info, Gid) of
-        {ok, {_, Members}, Node} ->
-          lists:map(fun(X) -> broadcast_impl(X, Msg, Gid, Node) end, Members),
+      case sc_store_server:lookup(group_info, gid, Gid) of
+        {ok, {_, _, Members}, Node} ->
+          lists:map(fun(X) -> broadcast_impl(X, Msg, Gid, Node) end, lists:delete(My_name, Members)),
           {ok, normal};
         {error, _, _} ->
           {error, members_not_found}
       end;
 
     {error, _, _} ->
-      {error, gid_not_found}
+      {error, not_in_group}
   end.
 
 % TODO: 这个send_msg在线方式不变，发送到Name; 而离线发送时保存到group_chat_record中；
 broadcast_impl(Name, Msg, Gid, Node) ->
   % broadcast 模式下的 一对一发送
   % send from My_name to Name
-  My_name = my_element_name(erlang:get(element_pid)),
+  My_name = erlang:get(name),
   case is_logined(My_name) and is_logined(Name) of
     true ->
 
@@ -417,7 +421,7 @@ broadcast_impl(Name, Msg, Gid, Node) ->
         true ->
           % online msg
           {ok, {_, Pid}, _} = sc_store_server:lookup(key_to_pid, name, Name),
-          sc_element:send_msg(Pid, Msg, erlang:get(element_pid)),
+          sc_element:send_msg(Pid, {My_name, Name, Msg}, my_element_pid()),
           % TODO: msg还需要保存到mnesia中
           sc_store_server:insert(Node, group_chat_record,
             #group_chat_record{
@@ -443,10 +447,31 @@ broadcast_impl(Name, Msg, Gid, Node) ->
       {error, not_login}
   end.
 
+id_generate2(N) ->
+  % TODO: auto generate id
+  Id = random:uniform(N),
+  case sc_store_server:lookup(group_info, gid, Id) of
+    {error, _, _} -> Id;
+    _ -> id_generate2(N)
+  end.
+
 % TODO: 还需要有group相关操作，例如加入组，退出组，解散组
-create_group() ->
+create_group(Group) ->
   % 建组时必须建立group_id
-  ok.
+  case is_logined(erlang:get(name)) andalso client_running(erlang:get(name)) of
+    false ->
+      {error, not_login_or_not_running};
+    true ->
+      case sc_store_server:lookup(group_info, group, Group) of
+        {ok, _, _} -> {error, group_already_exist};
+        {error, _, _} ->
+
+          % create a new group
+          Id = id_generate2(1000),
+          sc_store_server:insert(node(), group_chat, #group_chat{name = erlang:get(name), group = Group, group_id = Id}),
+          sc_store_server:insert(node(), group_info, #group_info{group_id = Id, group_name = Group, members = [erlang:get(name)]})
+      end
+  end.
 
 in_group(Name, Group) ->
   case sc_store_server:lookup(group_chat, #group_chat{name = Name, group = Group}) of
@@ -454,30 +479,54 @@ in_group(Name, Group) ->
     {error, _, _} -> false
   end.
 
-destroy_group() -> ok.
-
-join_group() -> ok.
-
-quit_group() -> ok.
-
-% TODO: test
-monitor_element(Pid, Fun) ->
-  spawn(
-    fun(F, P) ->
-      process_flag(trap_exit, true),
-      link(Pid),
-      receive
-        {'EXIT', From, Reason} ->
-          receive
-            {sync, Newpid} -> erlang:put(element_pid, Pid);
-            _ -> ok
+% TODO: complicated
+destroy_group(Group) ->
+  % clear group_chat and group_info when no one use
+  case is_logined(erlang:get(name)) andalso client_running(erlang:get(name)) of
+    false -> {error, not_login_or_not_running};
+    true ->
+      case sc_store_server:lookup(group_info, group, Group) of
+        {error, _, _} -> {error, not_exist};
+        {ok, {Gid, _Gname, Members}, _Node} ->
+          case length(Members) == 0 of
+            true ->
+              % delete the group
+              sc_store_server:delete(group_info, Gid);
+            false ->
+              {error, group_still_uesd}
           end
       end
-    end
-  ).
+  end.
+
+% Gid在哪个node，就把和该Group相关的group_chat/group_info所有信息都添加到这个node
+join_group(Group) ->
+  case is_logined(erlang:get(name)) andalso client_running(erlang:get(name)) of
+    false -> {error, not_login_or_not_running};
+    true ->
+      case sc_store_server:lookup(group_info, group, Group) of
+        {error, _, _} -> {error, group_not_exist};
+        {ok, {Gid, Gname, Members}, Node} ->
+          % overwrite
+          sc_store_server:insert(Node, group_chat, #group_chat{name = erlang:get(name), group = Gname, group_id = Gid}),
+          sc_store_server:insert(Node, group_info, #group_info{group_id = Gid, group_name = Gname, members = [erlang:get(name)]++lists:delete(erlang:get(name), Members)})
+      end
+  end.
+
+quit_group(Group) ->
+  case is_logined(erlang:get(name)) andalso client_running(erlang:get(name)) of
+    false -> {error, not_login_or_not_running};
+    true ->
+      case sc_store_server:lookup(group_info, group, Group) of
+        {error, _, _} -> {error, group_not_exist};
+        {ok, {Gid, _, _}, _} ->
+          sc_store_server:delete(group_chat, erlang:get(name), Group),
+          sc_store_server:delete(group_info, Gid, erlang:get(name))
+      end
+  end.
 
 % never user，每次call sc_element前都去key_to_pid中先查到当前element_pid
 % return: ok | error
+% TODO: error call lookup(key_to_pid...)
 update_element_pid() ->
   case sc_store_server:lookup(key_to_pid, caller, self()) of
     {ok, {_, Epid_r}, _} ->

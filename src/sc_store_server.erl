@@ -50,7 +50,7 @@
 -record(key_to_pid, {name, pid}).
 -record(user_auth, {name, code, timestamp}).
 -record(friend, {name, fr_names, timestamp}). % fr_names is list
--record(group_info, {group_id, members}).
+-record(group_info, {group_id, group_name, members}).
 
 -record(single_chat, {name, other_name, chat_id}). % 同时需要添加name-other,other-name,对应同一个chat_id
 -record(group_chat, {name, group, group_id}).
@@ -102,14 +102,16 @@ insert_sender(Node, Table, Args) when is_tuple(Args) ->
 lookup(key_to_pid, name, Key) when is_atom(Key) ->
   lookup_sender([node()|nodes()], key_to_pid, #key_to_pid{name = Key, pid = undefined});
 lookup(key_to_pid, epid, Epid) when is_pid(Epid) ->
-  lookup_sender([node()|nodes()], key_to_pid, #key_to_pid{name = undefined, pid = Epid}).
+  lookup_sender([node()|nodes()], key_to_pid, #key_to_pid{name = undefined, pid = Epid});
+lookup(group_info, gid, Gid) ->
+  lookup_sender([node()|nodes()], group_info, #group_info{group_id = Gid, group_name = undefined});
+lookup(group_info, group, Group) ->
+  lookup_sender([node()|nodes()], group_info, #group_info{group_id = undefined, group_name = Group}).
 
 lookup(user_auth, Key) when is_atom(Key) ->
   lookup_sender([node()|nodes()], user_auth, #user_auth{name = Key});
 lookup(friend, Key) when is_atom(Key) ->
   lookup_sender([node()|nodes()], friend, #friend{name = Key});
-lookup(group_info, Key) when is_integer(Key) ->
-  lookup_sender([node()|nodes()], group_info, #group_info{group_id = Key});
 
 % return: {ok, wholeline, node} | {error, not_found, all_nodes}
 % 接收参数为table,tuple时，当tuple需要多参数指定，但实际少给了参数，则未给定的是'undefined'，导致select结果空.
@@ -250,13 +252,13 @@ init([]) ->
   application:set_env(mnesia, dir, '../db'),
   mnesia:start(),
   %% {ok, Nodes} = resource_discovery:fetch_resources(simple_cache),
-  _Nodes = nodes(),
     catch(mnesia:change_table_copy_type(schema, node(), disc_copies)),
   create_all_tables(),
   _Tables = mnesia:system_info(local_tables),
 
-  % TODO: do not connect all node, need no synchronize
-  % dynamic_db_init(lists:delete(node(), Nodes)),
+  % TODO: 连接所有node，让其自动同步，默认insert/lookup都是从本节点优先开始执行
+  Nodes = nodes(),
+  dynamic_db_init(lists:delete(node(), Nodes)),
   {ok, {}}.
 
 %%--------------------------------------------------------------------
@@ -329,10 +331,20 @@ handle_call({lookup, friend, #friend{name = Name}}, _From, State) ->
     [#friend{fr_names = Friend_list, timestamp = Time}] -> {reply, {ok, {Name, Friend_list, Time}}, State};
     [] -> {reply, {error, not_found}, State}
   end;
-handle_call({lookup, group_info, #group_info{group_id = Group_id}}, _From, State) ->
-  case mnesia:dirty_read(group_info, Group_id) of
-    [#group_info{members = Member_list}] -> {reply, {ok, {Group_id, Member_list}}, State};
-    [] -> {reply, {error, not_found}, State}
+
+handle_call({lookup, group_info, #group_info{} = Record}, _From, State) ->
+  case Record of
+    #group_info{group_id = Gid, group_name = undefined} ->
+      case mnesia:dirty_read(group_info, Gid) of
+        [#group_info{group_name = Gname, members = Member_list}] -> {reply, {ok, {Gid, Gname, Member_list}}, State};
+        [] -> {reply, {error, not_found}, State}
+      end;
+
+    #group_info{group_id = undefined, group_name = Gname} ->
+      case mnesia:dirty_index_read(group_info, Gname, #group_info.group_name) of
+        [#group_info{group_id = Gid, members = Member_list}] -> {reply, {ok, {Gid, Gname, Member_list}}, State};
+        [] -> {reply, {error, not_found}, State}
+      end
   end;
 
 handle_call({lookup, single_chat, #single_chat{name = Name, other_name = Oname}}, _From, State) ->
@@ -440,9 +452,9 @@ handle_cast({delete, group_info, #group_info{group_id = Gid, members = Members}}
   case Members of
     [_Members] ->
       case mnesia:dirty_read(group_info, Gid) of
-        [#group_info{group_id = Gid_ret, members = Members_ret}] ->
+        [#group_info{group_id = Gid_ret, group_name = Gname, members = Members_ret}] ->
           Members_left = list_delete(Members, Members_ret),
-            catch(mnesia:dirty_write(group_info, #group_info{group_id = Gid_ret, members = Members_left})),
+            catch(mnesia:dirty_write(group_info, #group_info{group_id = Gid_ret, group_name = Gname, members = Members_left})),
           {noreply, State};
         _ -> {noreply, State}
       end;
@@ -614,6 +626,7 @@ create_all_tables() ->
     catch(mnesia:create_table(group_info,
     [
       {type, set},
+      {index, [#group_info.group_name]},
       {disc_copies, [node()]},
       {attributes, record_info(fields, group_info)}
     ])),
@@ -742,8 +755,8 @@ test_lookup() ->
   io:format("~p~n", [lookup(friend, shenglong1)]),
   io:format("~p~n", [lookup(friend, shenglong2)]),
 
-  io:format("~p~n", [lookup(group_info, 1011)]),
-  io:format("~p~n", [lookup(group_info, 1012)]),
+  io:format("~p~n", [lookup(group_info, gid, 1011)]),
+  io:format("~p~n", [lookup(group_info, gid, 1012)]),
 
 
   io:format("~p~n", [lookup(single_chat, #single_chat{name = 'shenglong1', other_name = 'James'})]),
